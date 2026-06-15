@@ -17,7 +17,6 @@ out/
 *.out
 
 # IDE / Editor files
-.vscode/
 .idea/
 *.swp
 *.swo
@@ -37,6 +36,10 @@ Makefile
 # OS files
 .DS_Store
 Thumbs.db
+
+# Media / binary video files
+*.ascv
+*.mp4
 
 # Dependency downloads (FetchContent)
 _deps/
