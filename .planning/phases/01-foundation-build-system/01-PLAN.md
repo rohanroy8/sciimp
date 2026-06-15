@@ -25,12 +25,12 @@ Set up the core project structure, CMake build system with C++20 and FetchConten
 
 ## must_haves
 
-- [ ] Root `CMakeLists.txt` configures the project with C++20, `-Wall -Wextra`, and `FetchContent` for zstd and miniaudio
-- [ ] FFmpeg is discovered via `PkgConfig` in CMake
-- [ ] Shared header `include/ascv/format.hpp` defines magic bytes `"ASCV"` and little-endian structs
-- [ ] Encoder executable skeleton compiles and links against FFmpeg + zstd + shared includes
-- [ ] Player executable skeleton compiles and links against miniaudio + zstd + shared includes
-- [ ] `cmake -B build && cmake --build build` succeeds with zero errors
+- [x] Root `CMakeLists.txt` configures the project with C++20, `-Wall -Wextra`, and `FetchContent` for zstd and miniaudio
+- [x] FFmpeg is discovered via `PkgConfig` in CMake
+- [x] Shared header `include/ascv/format.hpp` defines magic bytes `"ASCV"` and little-endian structs
+- [x] Encoder executable skeleton compiles and links against FFmpeg + zstd + shared includes
+- [x] Player executable skeleton compiles and links against miniaudio + zstd + shared includes
+- [x] `cmake -B build && cmake --build build` succeeds with zero errors
 
 ---
 
