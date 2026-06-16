@@ -1,4 +1,5 @@
 #include "ascv/format.hpp"
+#include "EncoderCore.hpp"
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -42,25 +43,13 @@ int main(int argc, char* argv[]) {
     spdlog::info("Output: {}", output);
     spdlog::info("Resolution: {}x{}", width, height);
 
-    std::ofstream out(output, std::ios::binary);
-    if (!out) {
-        spdlog::error("Failed to open output file: {}", output);
+    try {
+        ascv::encoder::encode(input, output, width, height, charset);
+        spdlog::info("Successfully encoded to {}", output);
+    } catch (const std::exception& e) {
+        spdlog::error("Encoding failed: {}", e.what());
         return 1;
     }
-
-    ascv::FileHeader header{};
-    std::memcpy(header.magic, ascv::MAGIC, 4);
-    header.version = ascv::FORMAT_VERSION;
-    header.width = static_cast<uint16_t>(width);
-    header.height = static_cast<uint16_t>(height);
-    header.frame_count = 0;
-    header.fps_numerator = 0;
-    header.fps_denominator = 0;
-
-    out.write(reinterpret_cast<const char*>(&header), sizeof(header));
-    out.close();
-
-    spdlog::info("Successfully wrote ASCV header to {}", output);
 
     return 0;
 }

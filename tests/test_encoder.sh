@@ -24,8 +24,41 @@ if [ "$MAGIC" != "41534356" ]; then
 fi
 
 FILE_SIZE=$(wc -c < "$OUTPUT_ASCV")
-if [ "$FILE_SIZE" -lt 22 ]; then
-    echo "ERROR: File size is $FILE_SIZE, expected at least 22 bytes."
+EXPECTED_SIZE=$((22 + 10 * 80 * 24))
+if [ "$FILE_SIZE" -ne "$EXPECTED_SIZE" ]; then
+    echo "ERROR: File size is $FILE_SIZE, expected exactly $EXPECTED_SIZE bytes."
+    exit 1
+fi
+
+WIDTH=$(od -j 6 -N 2 -t u2 -An "$OUTPUT_ASCV" | tr -d ' ')
+if [ "$WIDTH" -ne 80 ]; then
+    echo "ERROR: Width is $WIDTH, expected 80."
+    exit 1
+fi
+
+HEIGHT=$(od -j 8 -N 2 -t u2 -An "$OUTPUT_ASCV" | tr -d ' ')
+if [ "$HEIGHT" -ne 24 ]; then
+    echo "ERROR: Height is $HEIGHT, expected 24."
+    exit 1
+fi
+
+FRAME_COUNT=$(od -j 10 -N 4 -t u4 -An "$OUTPUT_ASCV" | tr -d ' ')
+if [ "$FRAME_COUNT" -ne 10 ]; then
+    echo "ERROR: Frame count is $FRAME_COUNT, expected 10."
+    exit 1
+fi
+
+FPS_NUM=$(od -j 14 -N 4 -t u4 -An "$OUTPUT_ASCV" | tr -d ' ')
+if [ "$FPS_NUM" -ne 10 ]; then
+    echo "ERROR: FPS numerator is $FPS_NUM, expected 10."
+    exit 1
+fi
+
+# Assert all frame data bytes are printable ASCII from default charset
+# Default charset: " .:-=+*#%@" (space is allowed)
+BAD_CHARS=$(dd if="$OUTPUT_ASCV" bs=1 skip=22 2>/dev/null | tr -d ' .:=+*#%@-' | wc -c)
+if [ "$BAD_CHARS" -ne 0 ]; then
+    echo "ERROR: Found $BAD_CHARS invalid characters in frame data."
     exit 1
 fi
 
