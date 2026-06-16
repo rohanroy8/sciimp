@@ -5,37 +5,33 @@ A proprietary, high-performance binary video format (`.ascv`) and rendering engi
 
 ## 2. Phase 1: The C++ Encoder (Generator)
 - **Decoding**: Uses FFmpeg's core C libraries (`libavcodec`, `libavformat`) to extract raw pixel memory from standard video formats (e.g., `.mp4`), bypassing high-level wrappers like OpenCV.
-- **Processing**: Uses C++ multithreading and pre-calculated Lookup Tables (LUTs) to rapidly map pixel brightness and color to ASCII characters and ANSI color codes.
+- **Processing**: Code is single-threaded and maps pixels dynamically via math (no LUTs) to ASCII characters and ANSI color codes.
 - **Compression**:
-  - **Run-Length Encoding (RLE)**: Compresses repeating characters (e.g., storing 50 black spaces as a single instruction instead of 50 individual characters).
-  - **Delta Frames (Inter-frame Compression)**: Saves only the characters (and their X/Y coordinates) that have changed from the previous frame. Keyframes are used periodically to refresh the entire grid.
+  - **Run-Length Encoding (RLE)**: Frame data is written as raw uncompressed char arrays, without Run-Length Encoding.
+  - **Delta Frames (Inter-frame Compression)**: Full frames are written every time, no delta frames are implemented.
 
 ## 3. Phase 2: The Lightweight Terminal Player
-- **Execution**: A bare-metal executable (built in C or C++) requiring almost zero CPU overhead. It reads pre-calculated binary data into RAM, sets an internal timer (e.g., 33.3ms for 30 FPS), and pushes text blocks directly to standard output (`stdout`).
+- **Execution**: A bare-metal executable (built in C or C++) requiring almost zero CPU overhead. Currently, the player only prints a version string and exits.
 - **Target Audience**: Extremely low-power hardware, microcontrollers, legacy systems, or simply anyone running terminal-based applications without the CPU load of real-time conversion.
 
 ## 4. The Binary File Structure (.ascv)
 The `.ascv` file is a strict binary layout designed to be read directly into memory blocks (structs) for maximum efficiency.
 
-### Zone 1: The Global Header (16 Bytes)
+### Zone 1: The Global Header (22 Bytes)
 Sets the rules for memory allocation and playback before the video starts:
 - **Bytes 0-3 (Magic Number)**: `ASCV` (`0x41 0x53 0x43 0x56`) to verify the file type.
-- **Byte 4 (Version)**: e.g., `0x01` (for future codec updates).
-- **Byte 5 (Color Mode)**: `0x00` (B&W), `0x01` (16-color), `0x02` (True Color).
+- **Bytes 4-5 (Version)**: Unsigned 16-bit integer for future codec updates.
 - **Bytes 6-7 (Width)**: Unsigned 16-bit integer (e.g., 120 columns).
 - **Bytes 8-9 (Height)**: Unsigned 16-bit integer (e.g., 40 rows).
-- **Byte 10 (FPS)**: Unsigned 8-bit integer (e.g., 30).
-- **Bytes 11-14 (Total Frames)**: Unsigned 32-bit integer.
-- **Byte 15 (Reserved)**: Empty (`0x00`) for future use or byte-alignment.
+- **Bytes 10-13 (Total Frames)**: Unsigned 32-bit integer representing frame count.
+- **Bytes 14-17 (FPS Numerator)**: Unsigned 32-bit integer.
+- **Bytes 18-21 (FPS Denominator)**: Unsigned 32-bit integer.
 
 ### Zone 2: The Data Stream (Frame Blocks)
 Continuous stream of video frames following the header.
-- **Frame Header (4 Bytes)**:
-  - **Byte 0 (Frame Type)**: `K` for Keyframe (full screen refresh), `D` for Delta frame (only changes).
-  - **Bytes 1-3 (Payload Size)**: 24-bit integer specifying the exact size of the incoming compressed payload in bytes.
-- **The Payload (Compressed Data)**:
-  - **Keyframe (K)**: Pairs a Count with a Character/Color. Binary layout: `[Count (1 byte)] [Char (1 byte)] [Color Code (1-3 bytes)]`. Overwrites the entire master grid in memory.
-  - **Delta Frame (D)**: Contains coordinates and instructions. Binary layout: `[X Coord (1 byte)] [Y Coord (1 byte)] [Count (1 byte)] [Char (1 byte)] [Color Code]`. Jumps to specific coordinates and overwrites only those characters.
+- **Raw Frame Data**: No frame header or payload size is implemented; raw character data is dumped directly.
+- **The Payload (Uncompressed Data)**:
+  - **Full Frames**: Frames are written as raw uncompressed char arrays. Full frames are written every time, as delta frames are not implemented.
 
 ## 5. Audio Synchronization (New Considerations)
 Audio synchronization shifts the engine from a "fixed FPS loop" to a "clock-driven model". Audio glitches are highly noticeable, so audio timing serves as the master clock.
