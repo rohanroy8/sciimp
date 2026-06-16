@@ -24,6 +24,23 @@ set(ZSTD_BUILD_SHARED   OFF CACHE BOOL "" FORCE)
 set(ZSTD_BUILD_STATIC   ON  CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(zstd)
 
+# --- CLI11 (header-only) ------------------------------------------------------
+FetchContent_Declare(
+    CLI11
+    GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
+    GIT_TAG        v2.4.2
+)
+FetchContent_MakeAvailable(CLI11)
+
+# --- spdlog -------------------------------------------------------------------
+FetchContent_Declare(
+    spdlog
+    GIT_REPOSITORY https://github.com/gabime/spdlog.git
+    GIT_TAG        v1.14.1
+)
+FetchContent_MakeAvailable(spdlog)
+
+
 # --- MiniAudio (header-only) --------------------------------------------------
 FetchContent_Declare(
     miniaudio
