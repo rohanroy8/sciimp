@@ -62,6 +62,15 @@ public:
     ~FfmpegContext() = default;
 };
 
+struct ScaleResult {
+    int cw;
+    int ch;
+    int pad_x;
+    int pad_y;
+};
+
+ScaleResult calculate_aspect_ratio(int iw, int ih, int W, int H);
+
 void encode(const std::string& input_path, const std::string& output_path, int W, int H, std::string_view charset);
 char map_gray_to_ascii(uint8_t gray, std::string_view charset);
 

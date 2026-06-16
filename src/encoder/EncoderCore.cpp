@@ -2,6 +2,7 @@
 #include "ascv/format.hpp"
 #include <stdexcept>
 #include <fstream>
+#include <cmath>
 #include <vector>
 
 namespace ascv::encoder {
@@ -68,16 +69,44 @@ char map_gray_to_ascii(uint8_t gray, std::string_view charset) {
     return charset[index];
 }
 
+ScaleResult calculate_aspect_ratio(int iw, int ih, int W, int H) {
+    if (iw == 0 || ih == 0) {
+        return {W, H, 0, 0};
+    }
+    
+    int ch = std::round((double)W * ih / (2.0 * iw));
+    int cw = W;
+
+    if (ch > H) {
+        ch = H;
+        cw = std::round((double)H * 2.0 * iw / ih);
+    }
+
+    int pad_x = (W - cw) / 2;
+    int pad_y = (H - ch) / 2;
+    
+    if (pad_x < 0) pad_x = 0;
+    if (pad_y < 0) pad_y = 0;
+    if (pad_x + cw > W) cw = W - pad_x;
+    if (pad_y + ch > H) ch = H - pad_y;
+
+    return {cw, ch, pad_x, pad_y};
+}
+
 void encode(const std::string& input_path, const std::string& output_path, int W, int H, std::string_view charset) {
     if (charset.size() < 2) {
         throw std::invalid_argument("Charset too small");
     }
 
     FfmpegContext ctx(input_path);
+    
+    int iw = ctx.codec_ctx->width;
+    int ih = ctx.codec_ctx->height;
+    ScaleResult scale = calculate_aspect_ratio(iw, ih, W, H);
 
     ctx.sws_ctx.reset(sws_getContext(
-        ctx.codec_ctx->width, ctx.codec_ctx->height, ctx.codec_ctx->pix_fmt,
-        W, H, AV_PIX_FMT_GRAY8,
+        iw, ih, ctx.codec_ctx->pix_fmt,
+        scale.cw, scale.ch, AV_PIX_FMT_GRAY8,
         SWS_BILINEAR, nullptr, nullptr, nullptr
     ));
 
@@ -102,14 +131,14 @@ void encode(const std::string& input_path, const std::string& output_path, int W
     out.write(reinterpret_cast<const char*>(&header), sizeof(header));
 
     ctx.gray_frame->format = AV_PIX_FMT_GRAY8;
-    ctx.gray_frame->width = W;
-    ctx.gray_frame->height = H;
+    ctx.gray_frame->width = scale.cw;
+    ctx.gray_frame->height = scale.ch;
     if (av_frame_get_buffer(ctx.gray_frame.get(), 32) < 0) {
         throw std::runtime_error("Could not allocate gray frame buffer");
     }
 
     uint32_t frame_count = 0;
-    std::vector<char> frame_buffer(W * H);
+    std::vector<char> frame_buffer(W * H, charset[0]);
 
     while (av_read_frame(ctx.fmt_ctx.get(), ctx.packet.get()) >= 0) {
         if (ctx.packet->stream_index == ctx.video_stream_index) {
@@ -119,10 +148,12 @@ void encode(const std::string& input_path, const std::string& output_path, int W
                               ctx.frame->data, ctx.frame->linesize, 0, ctx.codec_ctx->height,
                               ctx.gray_frame->data, ctx.gray_frame->linesize);
 
-                    for (int y = 0; y < H; ++y) {
-                        for (int x = 0; x < W; ++x) {
+                    std::fill(frame_buffer.begin(), frame_buffer.end(), charset[0]);
+
+                    for (int y = 0; y < scale.ch; ++y) {
+                        for (int x = 0; x < scale.cw; ++x) {
                             uint8_t gray = ctx.gray_frame->data[0][y * ctx.gray_frame->linesize[0] + x];
-                            frame_buffer[y * W + x] = map_gray_to_ascii(gray, charset);
+                            frame_buffer[(scale.pad_y + y) * W + (scale.pad_x + x)] = map_gray_to_ascii(gray, charset);
                         }
                     }
 
@@ -141,10 +172,12 @@ void encode(const std::string& input_path, const std::string& output_path, int W
                   ctx.frame->data, ctx.frame->linesize, 0, ctx.codec_ctx->height,
                   ctx.gray_frame->data, ctx.gray_frame->linesize);
 
-        for (int y = 0; y < H; ++y) {
-            for (int x = 0; x < W; ++x) {
+        std::fill(frame_buffer.begin(), frame_buffer.end(), charset[0]);
+
+        for (int y = 0; y < scale.ch; ++y) {
+            for (int x = 0; x < scale.cw; ++x) {
                 uint8_t gray = ctx.gray_frame->data[0][y * ctx.gray_frame->linesize[0] + x];
-                frame_buffer[y * W + x] = map_gray_to_ascii(gray, charset);
+                frame_buffer[(scale.pad_y + y) * W + (scale.pad_x + x)] = map_gray_to_ascii(gray, charset);
             }
         }
 
