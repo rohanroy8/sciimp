@@ -62,3 +62,28 @@ pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavformat libavut
 # ==============================================================================
 add_subdirectory(src/encoder)
 add_subdirectory(src/player)
+
+# ==============================================================================
+# Tests
+# ==============================================================================
+# --- Catch2 -------------------------------------------------------------------
+FetchContent_Declare(
+    Catch2
+    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+    GIT_TAG        v3.7.1
+)
+FetchContent_MakeAvailable(Catch2)
+
+enable_testing()
+
+add_executable(test_aspect_ratio
+    tests/test_aspect_ratio.cpp
+    src/encoder/EncoderCore.cpp
+)
+
+target_include_directories(test_aspect_ratio PRIVATE ${PROJECT_SOURCE_DIR}/include)
+
+target_link_libraries(test_aspect_ratio PRIVATE
+    Catch2::Catch2WithMain
+    PkgConfig::FFMPEG
+)

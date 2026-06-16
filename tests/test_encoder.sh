@@ -62,7 +62,33 @@ if [ "$BAD_CHARS" -ne 0 ]; then
     exit 1
 fi
 
+echo "Running unit tests..."
+./build/test_aspect_ratio
+
+echo "Generating portrait video for padding test..."
+PORTRAIT_VID="/tmp/ascv_portrait.mp4"
+PORTRAIT_ASCV="/tmp/ascv_portrait.ascv"
+ffmpeg -y -f lavfi -i testsrc=duration=1:size=480x640:rate=10 -c:v libx264 -pix_fmt yuv420p "$PORTRAIT_VID" 2>/dev/null
+
+echo "Encoding portrait video..."
+./build/src/encoder/ascv_encoder -i "$PORTRAIT_VID" -o "$PORTRAIT_ASCV" -W 80 -H 24
+
+echo "Validating padding..."
+# For 480x640 into 80x24: cw=36, ch=24, pad_x=22, pad_y=0.
+# We expect to find many spaces. Just verify the file size and that it contains space characters.
+PORTRAIT_SIZE=$(wc -c < "$PORTRAIT_ASCV")
+if [ "$PORTRAIT_SIZE" -ne "$EXPECTED_SIZE" ]; then
+    echo "ERROR: Portrait file size is $PORTRAIT_SIZE, expected exactly $EXPECTED_SIZE bytes."
+    exit 1
+fi
+
+SPACE_COUNT=$(dd if="$PORTRAIT_ASCV" bs=1 skip=22 2>/dev/null | tr -cd ' ' | wc -c)
+if [ "$SPACE_COUNT" -lt 100 ]; then
+    echo "ERROR: Not enough spaces found for padded video. Found $SPACE_COUNT."
+    exit 1
+fi
+
 echo "Cleaning up..."
-rm -f "$INPUT_VID" "$OUTPUT_ASCV"
+rm -f "$INPUT_VID" "$OUTPUT_ASCV" "$PORTRAIT_VID" "$PORTRAIT_ASCV"
 
 echo "PASS: All encoder tests passed"
