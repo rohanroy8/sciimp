@@ -1,4 +1,5 @@
 #include "ascv/format.hpp"
+#include "terminal.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -16,6 +17,10 @@
 #endif
 
 int main(int argc, char* argv[]) {
+    // Install signal handlers and enter raw terminal mode
+    ascv::setup_signals();
+    ascv::TerminalState term_state;
+
     FILE* input = nullptr;
 
     if (argc > 1) {
@@ -47,16 +52,18 @@ int main(int argc, char* argv[]) {
 
     const uint32_t frame_bytes = header.width * header.height;
 
-    // Pre-allocate raw frame buffer (no newlines — they come from encoder)
+    // Pre-allocate raw frame buffer (no newlines — added during rendering)
     std::vector<char> raw_frame(frame_bytes);
 
-    // Output buffer: ESC[H + rows each followed by '\n'
-    // Size = 3 (ESC[H) + height * (width + 1) newlines
+    // Output buffer: ESC[H + height rows, each row = width bytes + '\n'
     const size_t out_size = 3 + static_cast<size_t>(header.height) * (header.width + 1);
     std::string out_buf;
     out_buf.resize(out_size);
 
     for (uint32_t f = 0; f < header.frame_count; ++f) {
+        // Check for shutdown signal (Ctrl+C / SIGTERM / SIGQUIT)
+        if (ascv::g_shutdown_requested) break;
+
         if (fread(raw_frame.data(), 1, frame_bytes, input) != frame_bytes) {
             fprintf(stderr, "Error: Unexpected end of file at frame %u\n", f);
             if (input != stdin) fclose(input);
@@ -84,5 +91,6 @@ int main(int argc, char* argv[]) {
     }
 
     if (input != stdin) fclose(input);
+    // TerminalState destructor restores cursor and terminal mode automatically
     return 0;
 }
