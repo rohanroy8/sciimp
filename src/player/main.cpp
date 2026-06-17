@@ -79,15 +79,40 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    const uint32_t frame_bytes = header.width * header.height;
+    const uint32_t frame_cells = header.width * header.height;
+    ascv::ColorMode color_mode = static_cast<ascv::ColorMode>(header.color_mode);
+    size_t S = 1;
+    if (color_mode == ascv::ColorMode::MONOCHROME) {
+        S = 1;
+    } else if (color_mode == ascv::ColorMode::ANSI_16 || color_mode == ascv::ColorMode::ANSI_256) {
+        S = 2;
+    } else if (color_mode == ascv::ColorMode::RGB_24) {
+        S = 4;
+    }
+
+    const uint32_t total_cell_bytes = frame_cells * S;
 
     // Maintain a persistent frame buffer across iterations
-    std::vector<char> current_frame(frame_bytes, ' ');
+    std::vector<char> current_frame(total_cell_bytes);
+    if (color_mode == ascv::ColorMode::MONOCHROME) {
+        std::fill(current_frame.begin(), current_frame.end(), ' ');
+    } else if (color_mode == ascv::ColorMode::ANSI_16 || color_mode == ascv::ColorMode::ANSI_256) {
+        for (size_t i = 0; i < frame_cells; ++i) {
+            current_frame[i * 2 + 0] = ' ';
+            current_frame[i * 2 + 1] = 0;
+        }
+    } else if (color_mode == ascv::ColorMode::RGB_24) {
+        for (size_t i = 0; i < frame_cells; ++i) {
+            current_frame[i * 4 + 0] = ' ';
+            current_frame[i * 4 + 1] = 0;
+            current_frame[i * 4 + 2] = 0;
+            current_frame[i * 4 + 3] = 0;
+        }
+    }
 
-    // Output buffer: ESC[H + height rows, each row = width bytes + '\n'
-    const size_t out_size = 3 + static_cast<size_t>(header.height) * (header.width + 1);
+    // Output buffer: dynamic building
     std::string out_buf;
-    out_buf.resize(out_size);
+    out_buf.reserve(3 + static_cast<size_t>(header.height) * (header.width * 20 + 1));
 
     // Hybrid precision timing: frame duration in microseconds
     // frame_duration_us = (1,000,000 * fps_denominator) / fps_numerator
@@ -119,7 +144,7 @@ int main(int argc, char* argv[]) {
         // Zstd decompression
         unsigned long long decompressed_bound = ZSTD_getFrameContentSize(compressed_data.data(), compressed_data.size());
         if (decompressed_bound == ZSTD_CONTENTSIZE_ERROR || decompressed_bound == ZSTD_CONTENTSIZE_UNKNOWN) {
-            decompressed_bound = 2 * frame_bytes + 256;
+            decompressed_bound = 2 * total_cell_bytes + 256;
         }
         std::vector<uint8_t> rle_buffer(decompressed_bound);
         size_t decompressed_size = ZSTD_decompress(rle_buffer.data(), rle_buffer.size(),
@@ -132,36 +157,75 @@ int main(int argc, char* argv[]) {
         rle_buffer.resize(decompressed_size);
 
         // RLE decompression
-        std::vector<char> decompressed_data = decompress_rle(rle_buffer.data(), rle_buffer.size(), frame_bytes);
+        std::vector<char> decompressed_data = decompress_rle(rle_buffer.data(), rle_buffer.size(), total_cell_bytes);
 
         // Apply decompressed data to current_frame
         if (f_header.type == ascv::FrameType::I_FRAME) {
             std::copy(decompressed_data.begin(), decompressed_data.end(), current_frame.begin());
         } else {
-            for (size_t i = 0; i < frame_bytes; ++i) {
-                if (decompressed_data[i] != '\0') {
-                    current_frame[i] = decompressed_data[i];
+            for (size_t i = 0; i < frame_cells; ++i) {
+                if (decompressed_data[i * S] != '\0') {
+                    for (size_t b = 0; b < S; ++b) {
+                        current_frame[i * S + b] = decompressed_data[i * S + b];
+                    }
                 }
             }
         }
 
         // Build output buffer
-        size_t pos = 0;
-        // Cursor home
-        out_buf[pos++] = '\x1b';
-        out_buf[pos++] = '[';
-        out_buf[pos++] = 'H';
+        out_buf.clear();
+        out_buf.append("\x1b[H"); // Cursor home
 
-        // Rows — no '\n' after the last row to prevent terminal scroll at bottom edge
-        for (uint16_t row = 0; row < header.height; ++row) {
-            const char* row_start = current_frame.data() + row * header.width;
-            memcpy(&out_buf[pos], row_start, header.width);
-            pos += header.width;
-            if (row + 1 < header.height) out_buf[pos++] = '\n';
+        if (color_mode == ascv::ColorMode::MONOCHROME) {
+            for (uint16_t row = 0; row < header.height; ++row) {
+                const char* row_start = current_frame.data() + row * header.width;
+                out_buf.append(row_start, header.width);
+                if (row + 1 < header.height) out_buf.push_back('\n');
+            }
+        } else if (color_mode == ascv::ColorMode::ANSI_16 || color_mode == ascv::ColorMode::ANSI_256) {
+            int last_fg_idx = -1;
+            for (uint16_t row = 0; row < header.height; ++row) {
+                for (uint16_t col = 0; col < header.width; ++col) {
+                    size_t idx_in_frame = row * header.width + col;
+                    char ch = current_frame[idx_in_frame * 2 + 0];
+                    uint8_t color_idx = static_cast<uint8_t>(current_frame[idx_in_frame * 2 + 1]);
+                    if (static_cast<int>(color_idx) != last_fg_idx) {
+                        char code_buf[32];
+                        int len = snprintf(code_buf, sizeof(code_buf), "\x1b[38;5;%dm", static_cast<int>(color_idx));
+                        out_buf.append(code_buf, len);
+                        last_fg_idx = color_idx;
+                    }
+                    out_buf.push_back(ch);
+                }
+                if (row + 1 < header.height) out_buf.push_back('\n');
+            }
+            out_buf.append("\x1b[0m");
+        } else if (color_mode == ascv::ColorMode::RGB_24) {
+            int last_r = -1, last_g = -1, last_b = -1;
+            for (uint16_t row = 0; row < header.height; ++row) {
+                for (uint16_t col = 0; col < header.width; ++col) {
+                    size_t idx_in_frame = row * header.width + col;
+                    char ch = current_frame[idx_in_frame * 4 + 0];
+                    uint8_t r = static_cast<uint8_t>(current_frame[idx_in_frame * 4 + 1]);
+                    uint8_t g = static_cast<uint8_t>(current_frame[idx_in_frame * 4 + 2]);
+                    uint8_t b = static_cast<uint8_t>(current_frame[idx_in_frame * 4 + 3]);
+                    if (static_cast<int>(r) != last_r || static_cast<int>(g) != last_g || static_cast<int>(b) != last_b) {
+                        char code_buf[48];
+                        int len = snprintf(code_buf, sizeof(code_buf), "\x1b[38;2;%d;%d;%dm", static_cast<int>(r), static_cast<int>(g), static_cast<int>(b));
+                        out_buf.append(code_buf, len);
+                        last_r = r;
+                        last_g = g;
+                        last_b = b;
+                    }
+                    out_buf.push_back(ch);
+                }
+                if (row + 1 < header.height) out_buf.push_back('\n');
+            }
+            out_buf.append("\x1b[0m");
         }
 
         // Write entire frame in one syscall
-        WRITE_RESULT_T written = WRITE_FD(out_buf.data(), pos);
+        WRITE_RESULT_T written = WRITE_FD(out_buf.data(), out_buf.size());
         (void)written;
 
         // Hybrid precision timing
@@ -182,6 +246,10 @@ int main(int argc, char* argv[]) {
         while (std::chrono::steady_clock::now() < target_time) {
             // Busy-wait for sub-millisecond precision
         }
+    }
+
+    if (color_mode != ascv::ColorMode::MONOCHROME) {
+        WRITE_FD("\x1b[0m", 4);
     }
 
     if (input != stdin) fclose(input);

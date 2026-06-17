@@ -10,6 +10,67 @@ namespace ascv::encoder {
 
 namespace {
 
+struct RGB {
+    uint8_t r, g, b;
+};
+
+RGB get_ansi_color_rgb(int index) {
+    if (index < 16) {
+        static const RGB std16[16] = {
+            {0, 0, 0}, {128, 0, 0}, {0, 128, 0}, {128, 128, 0},
+            {0, 0, 128}, {128, 0, 128}, {0, 128, 128}, {192, 192, 192},
+            {128, 128, 128}, {255, 0, 0}, {0, 255, 0}, {255, 255, 0},
+            {0, 0, 255}, {255, 0, 255}, {0, 255, 255}, {255, 255, 255}
+        };
+        return std16[index];
+    } else if (index < 232) {
+        int r = (index - 16) / 36;
+        int g = ((index - 16) / 6) % 6;
+        int b = (index - 16) % 6;
+        auto step = [](int val) -> uint8_t {
+            return val == 0 ? 0 : 55 + val * 40;
+        };
+        return {step(r), step(g), step(b)};
+    } else {
+        uint8_t val = 8 + (index - 232) * 10;
+        return {val, val, val};
+    }
+}
+
+uint8_t rgb_to_ansi16(uint8_t r, uint8_t g, uint8_t b) {
+    uint8_t best_idx = 0;
+    int min_dist = 10000000;
+    for (int i = 0; i < 16; ++i) {
+        RGB p = get_ansi_color_rgb(i);
+        int dr = static_cast<int>(r) - p.r;
+        int dg = static_cast<int>(g) - p.g;
+        int db = static_cast<int>(b) - p.b;
+        int dist = dr*dr + dg*dg + db*db;
+        if (dist < min_dist) {
+            min_dist = dist;
+            best_idx = i;
+        }
+    }
+    return best_idx;
+}
+
+uint8_t rgb_to_ansi256(uint8_t r, uint8_t g, uint8_t b) {
+    uint8_t best_idx = 0;
+    int min_dist = 10000000;
+    for (int i = 0; i < 256; ++i) {
+        RGB p = get_ansi_color_rgb(i);
+        int dr = static_cast<int>(r) - p.r;
+        int dg = static_cast<int>(g) - p.g;
+        int db = static_cast<int>(b) - p.b;
+        int dist = dr*dr + dg*dg + db*db;
+        if (dist < min_dist) {
+            min_dist = dist;
+            best_idx = i;
+        }
+    }
+    return best_idx;
+}
+
 std::vector<uint8_t> compress_rle(const std::vector<char>& data) {
     std::vector<uint8_t> rle;
     if (data.empty()) {
@@ -79,10 +140,10 @@ FfmpegContext::FfmpegContext(const std::string& input_path) {
     }
 
     frame.reset(av_frame_alloc());
-    gray_frame.reset(av_frame_alloc());
+    scaled_frame.reset(av_frame_alloc());
     packet.reset(av_packet_alloc());
 
-    if (!frame || !gray_frame || !packet) {
+    if (!frame || !scaled_frame || !packet) {
         throw std::runtime_error("Failed to allocate FFmpeg structs");
     }
 
@@ -131,7 +192,7 @@ ScaleResult calculate_aspect_ratio(int iw, int ih, int W, int H) {
     return {cw, ch, pad_x, pad_y};
 }
 
-void encode(const std::string& input_path, const std::string& output_path, int W, int H, std::string_view charset) {
+void encode(const std::string& input_path, const std::string& output_path, int W, int H, std::string_view charset, ColorMode color_mode) {
     if (charset.size() < 2) {
         throw std::invalid_argument("Charset too small");
     }
@@ -144,7 +205,7 @@ void encode(const std::string& input_path, const std::string& output_path, int W
 
     ctx.sws_ctx.reset(sws_getContext(
         iw, ih, ctx.codec_ctx->pix_fmt,
-        scale.cw, scale.ch, AV_PIX_FMT_GRAY8,
+        scale.cw, scale.ch, AV_PIX_FMT_RGB24,
         SWS_BILINEAR, nullptr, nullptr, nullptr
     ));
 
@@ -165,19 +226,53 @@ void encode(const std::string& input_path, const std::string& output_path, int W
     header.frame_count = 0;
     header.fps_numerator = ctx.fps_num;
     header.fps_denominator = ctx.fps_den;
+    header.color_mode = static_cast<uint8_t>(color_mode);
 
     out.write(reinterpret_cast<const char*>(&header), sizeof(header));
 
-    ctx.gray_frame->format = AV_PIX_FMT_GRAY8;
-    ctx.gray_frame->width = scale.cw;
-    ctx.gray_frame->height = scale.ch;
-    if (av_frame_get_buffer(ctx.gray_frame.get(), 32) < 0) {
-        throw std::runtime_error("Could not allocate gray frame buffer");
+    ctx.scaled_frame->format = AV_PIX_FMT_RGB24;
+    ctx.scaled_frame->width = scale.cw;
+    ctx.scaled_frame->height = scale.ch;
+    if (av_frame_get_buffer(ctx.scaled_frame.get(), 32) < 0) {
+        throw std::runtime_error("Could not allocate scaled frame buffer");
     }
 
+    size_t S = 1;
+    if (color_mode == ascv::ColorMode::MONOCHROME) {
+        S = 1;
+    } else if (color_mode == ascv::ColorMode::ANSI_16) {
+        S = 2;
+    } else if (color_mode == ascv::ColorMode::ANSI_256) {
+        S = 2;
+    } else if (color_mode == ascv::ColorMode::RGB_24) {
+        S = 4;
+    }
+
+    size_t total_cells = static_cast<size_t>(W) * H;
     uint32_t frame_count = 0;
-    std::vector<char> frame_buffer(W * H, charset[0]);
-    std::vector<char> previous_frame(W * H, charset[0]);
+    std::vector<char> frame_buffer(total_cells * S);
+    std::vector<char> previous_frame(total_cells * S);
+
+    auto fill_default_cells = [&](std::vector<char>& buf) {
+        if (color_mode == ascv::ColorMode::MONOCHROME) {
+            std::fill(buf.begin(), buf.end(), charset[0]);
+        } else if (color_mode == ascv::ColorMode::ANSI_16 || color_mode == ascv::ColorMode::ANSI_256) {
+            for (size_t i = 0; i < total_cells; ++i) {
+                buf[i * 2 + 0] = charset[0];
+                buf[i * 2 + 1] = 0;
+            }
+        } else if (color_mode == ascv::ColorMode::RGB_24) {
+            for (size_t i = 0; i < total_cells; ++i) {
+                buf[i * 4 + 0] = charset[0];
+                buf[i * 4 + 1] = 0;
+                buf[i * 4 + 2] = 0;
+                buf[i * 4 + 3] = 0;
+            }
+        }
+    };
+
+    fill_default_cells(frame_buffer);
+    fill_default_cells(previous_frame);
 
     auto write_frame = [&](const std::vector<char>& current_frame, uint32_t f_index) {
         bool is_i_frame = (f_index % 30 == 0);
@@ -189,12 +284,23 @@ void encode(const std::string& input_path, const std::string& output_path, int W
             rle_data = compress_rle(current_frame);
         } else {
             f_header.type = ascv::FrameType::P_FRAME;
-            std::vector<char> delta_frame(W * H);
-            for (size_t i = 0; i < current_frame.size(); ++i) {
-                if (current_frame[i] == previous_frame[i]) {
-                    delta_frame[i] = '\0';
+            std::vector<char> delta_frame(total_cells * S);
+            for (size_t i = 0; i < total_cells; ++i) {
+                bool cell_matches = true;
+                for (size_t b = 0; b < S; ++b) {
+                    if (current_frame[i * S + b] != previous_frame[i * S + b]) {
+                        cell_matches = false;
+                        break;
+                    }
+                }
+                if (cell_matches) {
+                    for (size_t b = 0; b < S; ++b) {
+                        delta_frame[i * S + b] = '\0';
+                    }
                 } else {
-                    delta_frame[i] = current_frame[i];
+                    for (size_t b = 0; b < S; ++b) {
+                        delta_frame[i * S + b] = current_frame[i * S + b];
+                    }
                 }
             }
             rle_data = compress_rle(delta_frame);
@@ -216,25 +322,47 @@ void encode(const std::string& input_path, const std::string& output_path, int W
         previous_frame = current_frame;
     };
 
+    auto process_and_write_frame = [&]() {
+        sws_scale(ctx.sws_ctx.get(),
+                  ctx.frame->data, ctx.frame->linesize, 0, ctx.codec_ctx->height,
+                  ctx.scaled_frame->data, ctx.scaled_frame->linesize);
+
+        fill_default_cells(frame_buffer);
+
+        for (int y = 0; y < scale.ch; ++y) {
+            for (int x = 0; x < scale.cw; ++x) {
+                uint8_t* pixel = ctx.scaled_frame->data[0] + y * ctx.scaled_frame->linesize[0] + x * 3;
+                uint8_t r = pixel[0];
+                uint8_t g = pixel[1];
+                uint8_t b = pixel[2];
+
+                uint8_t luminance = static_cast<uint8_t>(std::round(0.299 * r + 0.587 * g + 0.114 * b));
+                char ch = map_gray_to_ascii(luminance, charset);
+
+                size_t cell_idx = ((scale.pad_y + y) * W + (scale.pad_x + x)) * S;
+                frame_buffer[cell_idx + 0] = ch;
+
+                if (color_mode == ascv::ColorMode::ANSI_16) {
+                    frame_buffer[cell_idx + 1] = rgb_to_ansi16(r, g, b);
+                } else if (color_mode == ascv::ColorMode::ANSI_256) {
+                    frame_buffer[cell_idx + 1] = rgb_to_ansi256(r, g, b);
+                } else if (color_mode == ascv::ColorMode::RGB_24) {
+                    frame_buffer[cell_idx + 1] = r;
+                    frame_buffer[cell_idx + 2] = g;
+                    frame_buffer[cell_idx + 3] = b;
+                }
+            }
+        }
+
+        write_frame(frame_buffer, frame_count);
+        frame_count++;
+    };
+
     while (av_read_frame(ctx.fmt_ctx.get(), ctx.packet.get()) >= 0) {
         if (ctx.packet->stream_index == ctx.video_stream_index) {
             if (avcodec_send_packet(ctx.codec_ctx.get(), ctx.packet.get()) >= 0) {
                 while (avcodec_receive_frame(ctx.codec_ctx.get(), ctx.frame.get()) == 0) {
-                    sws_scale(ctx.sws_ctx.get(),
-                              ctx.frame->data, ctx.frame->linesize, 0, ctx.codec_ctx->height,
-                              ctx.gray_frame->data, ctx.gray_frame->linesize);
-
-                    std::fill(frame_buffer.begin(), frame_buffer.end(), charset[0]);
-
-                    for (int y = 0; y < scale.ch; ++y) {
-                        for (int x = 0; x < scale.cw; ++x) {
-                            uint8_t gray = ctx.gray_frame->data[0][y * ctx.gray_frame->linesize[0] + x];
-                            frame_buffer[(scale.pad_y + y) * W + (scale.pad_x + x)] = map_gray_to_ascii(gray, charset);
-                        }
-                    }
-
-                    write_frame(frame_buffer, frame_count);
-                    frame_count++;
+                    process_and_write_frame();
                 }
             }
         }
@@ -244,21 +372,7 @@ void encode(const std::string& input_path, const std::string& output_path, int W
     // Flush decoder
     avcodec_send_packet(ctx.codec_ctx.get(), nullptr);
     while (avcodec_receive_frame(ctx.codec_ctx.get(), ctx.frame.get()) == 0) {
-        sws_scale(ctx.sws_ctx.get(),
-                  ctx.frame->data, ctx.frame->linesize, 0, ctx.codec_ctx->height,
-                  ctx.gray_frame->data, ctx.gray_frame->linesize);
-
-        std::fill(frame_buffer.begin(), frame_buffer.end(), charset[0]);
-
-        for (int y = 0; y < scale.ch; ++y) {
-            for (int x = 0; x < scale.cw; ++x) {
-                uint8_t gray = ctx.gray_frame->data[0][y * ctx.gray_frame->linesize[0] + x];
-                frame_buffer[(scale.pad_y + y) * W + (scale.pad_x + x)] = map_gray_to_ascii(gray, charset);
-            }
-        }
-
-        write_frame(frame_buffer, frame_count);
-        frame_count++;
+        process_and_write_frame();
     }
 
     header.frame_count = frame_count;

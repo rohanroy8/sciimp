@@ -12,6 +12,8 @@ extern "C" {
 #include <libavutil/frame.h>
 }
 
+#include "ascv/format.hpp"
+
 namespace ascv::encoder {
 
 struct AVFormatContextDeleter {
@@ -49,7 +51,7 @@ public:
     std::unique_ptr<AVFormatContext, AVFormatContextDeleter> fmt_ctx;
     std::unique_ptr<AVCodecContext, AVCodecContextDeleter> codec_ctx;
     std::unique_ptr<AVFrame, AVFrameDeleter> frame;
-    std::unique_ptr<AVFrame, AVFrameDeleter> gray_frame;
+    std::unique_ptr<AVFrame, AVFrameDeleter> scaled_frame;
     std::unique_ptr<AVPacket, AVPacketDeleter> packet;
     std::unique_ptr<SwsContext, SwsContextDeleter> sws_ctx;
 
@@ -71,7 +73,7 @@ struct ScaleResult {
 
 ScaleResult calculate_aspect_ratio(int iw, int ih, int W, int H);
 
-void encode(const std::string& input_path, const std::string& output_path, int W, int H, std::string_view charset);
+void encode(const std::string& input_path, const std::string& output_path, int W, int H, std::string_view charset, ColorMode color_mode);
 char map_gray_to_ascii(uint8_t gray, std::string_view charset);
 
 } // namespace ascv::encoder

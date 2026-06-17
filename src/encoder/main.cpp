@@ -21,17 +21,31 @@ int main(int argc, char* argv[]) {
     int width = 0;
     int height = 0;
     std::string charset = " .:-=+*#%@";
+    std::string color_mode_str = "none";
 
     app.add_option("-i,--input", input, "Input video file")->required();
     app.add_option("-o,--output", output, "Output ASCV file")->required();
     app.add_option("-W,--width", width, "Output ASCII width")->required();
     app.add_option("-H,--height", height, "Output ASCII height")->required();
     app.add_option("--charset", charset, "ASCII character set to use");
+    app.add_option("--color-mode", color_mode_str, "Color mode: none, ansi16, ansi256, truecolor")
+       ->check(CLI::IsMember({"none", "ansi16", "ansi256", "truecolor"}));
 
     try {
         app.parse(argc, argv);
     } catch (const CLI::ParseError &e) {
         return app.exit(e);
+    }
+
+    ascv::ColorMode color_mode = ascv::ColorMode::MONOCHROME;
+    if (color_mode_str == "none") {
+        color_mode = ascv::ColorMode::MONOCHROME;
+    } else if (color_mode_str == "ansi16") {
+        color_mode = ascv::ColorMode::ANSI_16;
+    } else if (color_mode_str == "ansi256") {
+        color_mode = ascv::ColorMode::ANSI_256;
+    } else if (color_mode_str == "truecolor") {
+        color_mode = ascv::ColorMode::RGB_24;
     }
 
     auto logger = spdlog::stdout_color_mt("encoder");
@@ -42,9 +56,10 @@ int main(int argc, char* argv[]) {
     spdlog::info("Input: {}", input);
     spdlog::info("Output: {}", output);
     spdlog::info("Resolution: {}x{}", width, height);
+    spdlog::info("Color Mode: {}", color_mode_str);
 
     try {
-        ascv::encoder::encode(input, output, width, height, charset);
+        ascv::encoder::encode(input, output, width, height, charset, color_mode);
         spdlog::info("Successfully encoded to {}", output);
     } catch (const std::exception& e) {
         spdlog::error("Encoding failed: {}", e.what());
