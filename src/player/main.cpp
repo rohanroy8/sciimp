@@ -1,9 +1,11 @@
 #include "ascv/format.hpp"
 #include "terminal.hpp"
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef _WIN32
@@ -60,6 +62,13 @@ int main(int argc, char* argv[]) {
     std::string out_buf;
     out_buf.resize(out_size);
 
+    // Hybrid precision timing: frame duration in microseconds
+    // frame_duration_us = (1,000,000 * fps_denominator) / fps_numerator
+    const uint64_t frame_duration_us =
+        (1'000'000ULL * header.fps_denominator) / header.fps_numerator;
+
+    const auto start_time = std::chrono::steady_clock::now();
+
     for (uint32_t f = 0; f < header.frame_count; ++f) {
         // Check for shutdown signal (Ctrl+C / SIGTERM / SIGQUIT)
         if (ascv::g_shutdown_requested) break;
@@ -88,6 +97,25 @@ int main(int argc, char* argv[]) {
         // Write entire frame in one syscall
         ssize_t written = WRITE_FD(out_buf.data(), pos);
         (void)written;
+
+        // Hybrid precision timing
+        // Calculate absolute target time for this frame
+        const auto target_time = start_time +
+            std::chrono::microseconds(static_cast<int64_t>(f + 1) *
+                                      static_cast<int64_t>(frame_duration_us));
+
+        const auto now = std::chrono::steady_clock::now();
+        const auto remaining = target_time - now;
+
+        // Sleep if > 2ms remaining to yield CPU, then spin-wait for precision
+        if (remaining > std::chrono::milliseconds(2)) {
+            std::this_thread::sleep_for(remaining - std::chrono::milliseconds(2));
+        }
+
+        // Spin-wait for the last 2ms (or the full remaining duration if < 2ms)
+        while (std::chrono::steady_clock::now() < target_time) {
+            // Busy-wait for sub-millisecond precision
+        }
     }
 
     if (input != stdin) fclose(input);
