@@ -88,12 +88,12 @@ int main(int argc, char* argv[]) {
         out_buf[pos++] = '[';
         out_buf[pos++] = 'H';
 
-        // Rows
+        // Rows — no '\n' after the last row to prevent terminal scroll at bottom edge
         for (uint16_t row = 0; row < header.height; ++row) {
             const char* row_start = raw_frame.data() + row * header.width;
             memcpy(&out_buf[pos], row_start, header.width);
             pos += header.width;
-            out_buf[pos++] = '\n';
+            if (row + 1 < header.height) out_buf[pos++] = '\n';
         }
 
         // Write entire frame in one syscall

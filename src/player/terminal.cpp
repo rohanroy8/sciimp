@@ -59,19 +59,19 @@ TerminalState::TerminalState() {
     SetConsoleMode(hin_,  new_in_mode);
     saved_ = true;
 
-    // Hide cursor
-    const char* hide = "\x1b[?25l";
+    // Enter alternate screen buffer, then hide cursor
+    const char* enter = "\x1b[?1049h\x1b[?25l";
     DWORD written = 0;
-    WriteConsoleA(hout_, hide, 6, &written, nullptr);
+    WriteConsoleA(hout_, enter, 12, &written, nullptr);
 }
 
 TerminalState::~TerminalState() {
     if (!saved_) return;
 
-    // Show cursor
-    const char* show = "\x1b[?25h";
+    // Show cursor and leave alternate screen buffer
+    const char* leave = "\x1b[?25h\x1b[?1049l";
     DWORD written = 0;
-    WriteConsoleA(hout_, show, 6, &written, nullptr);
+    WriteConsoleA(hout_, leave, 12, &written, nullptr);
 
     // Restore original modes
     SetConsoleMode(hout_, orig_out_mode_);
@@ -92,17 +92,17 @@ TerminalState::TerminalState() {
     raw.c_lflag &= ~static_cast<tcflag_t>(ICANON | ECHO);
     tcsetattr(STDOUT_FILENO, TCSAFLUSH, &raw);
 
-    // Hide cursor
-    const char hide[] = "\x1b[?25l";
-    write(STDOUT_FILENO, hide, sizeof(hide) - 1);
+    // Enter alternate screen buffer, then hide cursor
+    const char enter[] = "\x1b[?1049h\x1b[?25l";
+    write(STDOUT_FILENO, enter, sizeof(enter) - 1);
 }
 
 TerminalState::~TerminalState() {
     if (!saved_) return;
 
-    // Show cursor
-    const char show[] = "\x1b[?25h";
-    write(STDOUT_FILENO, show, sizeof(show) - 1);
+    // Show cursor and leave alternate screen buffer (restores original shell content)
+    const char leave[] = "\x1b[?25h\x1b[?1049l";
+    write(STDOUT_FILENO, leave, sizeof(leave) - 1);
 
     // Restore original terminal state
     tcsetattr(STDOUT_FILENO, TCSAFLUSH, &orig_termios_);
