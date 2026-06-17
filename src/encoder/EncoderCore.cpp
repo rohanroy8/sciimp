@@ -1,11 +1,49 @@
 #include "EncoderCore.hpp"
 #include "ascv/format.hpp"
+#include <zstd.h>
 #include <stdexcept>
 #include <fstream>
 #include <cmath>
 #include <vector>
 
 namespace ascv::encoder {
+
+namespace {
+
+std::vector<uint8_t> compress_rle(const std::vector<char>& data) {
+    std::vector<uint8_t> rle;
+    if (data.empty()) {
+        return rle;
+    }
+    uint8_t current_val = static_cast<uint8_t>(data[0]);
+    size_t count = 1;
+    for (size_t i = 1; i < data.size(); ++i) {
+        uint8_t val = static_cast<uint8_t>(data[i]);
+        if (val == current_val) {
+            count++;
+        } else {
+            while (count > 255) {
+                rle.push_back(255);
+                rle.push_back(current_val);
+                count -= 255;
+            }
+            rle.push_back(static_cast<uint8_t>(count));
+            rle.push_back(current_val);
+            current_val = val;
+            count = 1;
+        }
+    }
+    while (count > 255) {
+        rle.push_back(255);
+        rle.push_back(current_val);
+        count -= 255;
+    }
+    rle.push_back(static_cast<uint8_t>(count));
+    rle.push_back(current_val);
+    return rle;
+}
+
+} // namespace
 
 FfmpegContext::FfmpegContext(const std::string& input_path) {
     AVFormatContext* format_ctx_raw = nullptr;
@@ -139,6 +177,44 @@ void encode(const std::string& input_path, const std::string& output_path, int W
 
     uint32_t frame_count = 0;
     std::vector<char> frame_buffer(W * H, charset[0]);
+    std::vector<char> previous_frame(W * H, charset[0]);
+
+    auto write_frame = [&](const std::vector<char>& current_frame, uint32_t f_index) {
+        bool is_i_frame = (f_index % 30 == 0);
+        std::vector<uint8_t> rle_data;
+        ascv::FrameHeader f_header{};
+        
+        if (is_i_frame) {
+            f_header.type = ascv::FrameType::I_FRAME;
+            rle_data = compress_rle(current_frame);
+        } else {
+            f_header.type = ascv::FrameType::P_FRAME;
+            std::vector<char> delta_frame(W * H);
+            for (size_t i = 0; i < current_frame.size(); ++i) {
+                if (current_frame[i] == previous_frame[i]) {
+                    delta_frame[i] = '\0';
+                } else {
+                    delta_frame[i] = current_frame[i];
+                }
+            }
+            rle_data = compress_rle(delta_frame);
+        }
+
+        size_t max_zstd_size = ZSTD_compressBound(rle_data.size());
+        std::vector<uint8_t> compressed_data(max_zstd_size);
+        size_t c_size = ZSTD_compress(compressed_data.data(), compressed_data.size(),
+                                      rle_data.data(), rle_data.size(), 3);
+        if (ZSTD_isError(c_size)) {
+            throw std::runtime_error("ZSTD compression failed: " + std::string(ZSTD_getErrorName(c_size)));
+        }
+        compressed_data.resize(c_size);
+
+        f_header.compressed_size = static_cast<uint32_t>(c_size);
+        out.write(reinterpret_cast<const char*>(&f_header), sizeof(f_header));
+        out.write(reinterpret_cast<const char*>(compressed_data.data()), compressed_data.size());
+
+        previous_frame = current_frame;
+    };
 
     while (av_read_frame(ctx.fmt_ctx.get(), ctx.packet.get()) >= 0) {
         if (ctx.packet->stream_index == ctx.video_stream_index) {
@@ -157,7 +233,7 @@ void encode(const std::string& input_path, const std::string& output_path, int W
                         }
                     }
 
-                    out.write(frame_buffer.data(), frame_buffer.size());
+                    write_frame(frame_buffer, frame_count);
                     frame_count++;
                 }
             }
@@ -181,7 +257,7 @@ void encode(const std::string& input_path, const std::string& output_path, int W
             }
         }
 
-        out.write(frame_buffer.data(), frame_buffer.size());
+        write_frame(frame_buffer, frame_count);
         frame_count++;
     }
 

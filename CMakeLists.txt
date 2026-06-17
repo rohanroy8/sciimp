@@ -86,4 +86,5 @@ target_include_directories(test_aspect_ratio PRIVATE ${PROJECT_SOURCE_DIR}/inclu
 target_link_libraries(test_aspect_ratio PRIVATE
     Catch2::Catch2WithMain
     PkgConfig::FFMPEG
+    libzstd_static
 )

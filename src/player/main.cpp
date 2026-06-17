@@ -7,6 +7,31 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <zstd.h>
+
+namespace {
+
+std::vector<char> decompress_rle(const uint8_t* rle_data, size_t rle_size, size_t expected_size) {
+    std::vector<char> data;
+    data.reserve(expected_size);
+    for (size_t i = 0; i + 1 < rle_size; i += 2) {
+        uint8_t count = rle_data[i];
+        char val = static_cast<char>(rle_data[i + 1]);
+        if (data.size() + count > expected_size) {
+            count = static_cast<uint8_t>(expected_size - data.size());
+        }
+        data.insert(data.end(), count, val);
+        if (data.size() >= expected_size) {
+            break;
+        }
+    }
+    if (data.size() < expected_size) {
+        data.resize(expected_size, '\0');
+    }
+    return data;
+}
+
+} // namespace
 
 #ifdef _WIN32
 #  include <fcntl.h>
@@ -56,8 +81,8 @@ int main(int argc, char* argv[]) {
 
     const uint32_t frame_bytes = header.width * header.height;
 
-    // Pre-allocate raw frame buffer (no newlines — added during rendering)
-    std::vector<char> raw_frame(frame_bytes);
+    // Maintain a persistent frame buffer across iterations
+    std::vector<char> current_frame(frame_bytes, ' ');
 
     // Output buffer: ESC[H + height rows, each row = width bytes + '\n'
     const size_t out_size = 3 + static_cast<size_t>(header.height) * (header.width + 1);
@@ -75,10 +100,49 @@ int main(int argc, char* argv[]) {
         // Check for shutdown signal (Ctrl+C / SIGTERM / SIGQUIT)
         if (ascv::g_shutdown_requested) break;
 
-        if (fread(raw_frame.data(), 1, frame_bytes, input) != frame_bytes) {
-            fprintf(stderr, "Error: Unexpected end of file at frame %u\n", f);
+        // Read FrameHeader
+        ascv::FrameHeader f_header;
+        if (fread(&f_header, sizeof(f_header), 1, input) != 1) {
+            fprintf(stderr, "Error: Unexpected end of file at frame %u (reading header)\n", f);
             if (input != stdin) fclose(input);
             return 1;
+        }
+
+        // Read payload
+        std::vector<uint8_t> compressed_data(f_header.compressed_size);
+        if (fread(compressed_data.data(), 1, f_header.compressed_size, input) != f_header.compressed_size) {
+            fprintf(stderr, "Error: Unexpected end of file at frame %u (reading payload)\n", f);
+            if (input != stdin) fclose(input);
+            return 1;
+        }
+
+        // Zstd decompression
+        unsigned long long decompressed_bound = ZSTD_getFrameContentSize(compressed_data.data(), compressed_data.size());
+        if (decompressed_bound == ZSTD_CONTENTSIZE_ERROR || decompressed_bound == ZSTD_CONTENTSIZE_UNKNOWN) {
+            decompressed_bound = 2 * frame_bytes + 256;
+        }
+        std::vector<uint8_t> rle_buffer(decompressed_bound);
+        size_t decompressed_size = ZSTD_decompress(rle_buffer.data(), rle_buffer.size(),
+                                                   compressed_data.data(), compressed_data.size());
+        if (ZSTD_isError(decompressed_size)) {
+            fprintf(stderr, "Error: ZSTD decompression failed at frame %u: %s\n", f, ZSTD_getErrorName(decompressed_size));
+            if (input != stdin) fclose(input);
+            return 1;
+        }
+        rle_buffer.resize(decompressed_size);
+
+        // RLE decompression
+        std::vector<char> decompressed_data = decompress_rle(rle_buffer.data(), rle_buffer.size(), frame_bytes);
+
+        // Apply decompressed data to current_frame
+        if (f_header.type == ascv::FrameType::I_FRAME) {
+            std::copy(decompressed_data.begin(), decompressed_data.end(), current_frame.begin());
+        } else {
+            for (size_t i = 0; i < frame_bytes; ++i) {
+                if (decompressed_data[i] != '\0') {
+                    current_frame[i] = decompressed_data[i];
+                }
+            }
         }
 
         // Build output buffer
@@ -90,7 +154,7 @@ int main(int argc, char* argv[]) {
 
         // Rows — no '\n' after the last row to prevent terminal scroll at bottom edge
         for (uint16_t row = 0; row < header.height; ++row) {
-            const char* row_start = raw_frame.data() + row * header.width;
+            const char* row_start = current_frame.data() + row * header.width;
             memcpy(&out_buf[pos], row_start, header.width);
             pos += header.width;
             if (row + 1 < header.height) out_buf[pos++] = '\n';

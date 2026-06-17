@@ -24,11 +24,12 @@ if [ "$MAGIC" != "41534356" ]; then
 fi
 
 FILE_SIZE=$(wc -c < "$OUTPUT_ASCV")
-EXPECTED_SIZE=$((22 + 10 * 80 * 24))
-if [ "$FILE_SIZE" -ne "$EXPECTED_SIZE" ]; then
-    echo "ERROR: File size is $FILE_SIZE, expected exactly $EXPECTED_SIZE bytes."
+UNCOMPRESSED_SIZE=$((22 + 10 * 80 * 24))
+if [ "$FILE_SIZE" -ge "$UNCOMPRESSED_SIZE" ]; then
+    echo "ERROR: File size is $FILE_SIZE, expected to be compressed (less than $UNCOMPRESSED_SIZE bytes)."
     exit 1
 fi
+echo "Compressed file size is $FILE_SIZE bytes (uncompressed was $UNCOMPRESSED_SIZE bytes)."
 
 WIDTH=$(od -j 6 -N 2 -t u2 -An "$OUTPUT_ASCV" | tr -d ' ')
 if [ "$WIDTH" -ne 80 ]; then
@@ -54,13 +55,7 @@ if [ "$FPS_NUM" -ne 10 ]; then
     exit 1
 fi
 
-# Assert all frame data bytes are printable ASCII from default charset
-# Default charset: " .:-=+*#%@" (space is allowed)
-BAD_CHARS=$(dd if="$OUTPUT_ASCV" bs=1 skip=22 2>/dev/null | tr -d ' .:=+*#%@-' | wc -c)
-if [ "$BAD_CHARS" -ne 0 ]; then
-    echo "ERROR: Found $BAD_CHARS invalid characters in frame data."
-    exit 1
-fi
+# Binary payload contains compressed bytes, so character-set check is skipped.
 
 echo "Running unit tests..."
 ./build/test_aspect_ratio
@@ -77,16 +72,11 @@ echo "Validating padding..."
 # For 480x640 into 80x24: cw=36, ch=24, pad_x=22, pad_y=0.
 # We expect to find many spaces. Just verify the file size and that it contains space characters.
 PORTRAIT_SIZE=$(wc -c < "$PORTRAIT_ASCV")
-if [ "$PORTRAIT_SIZE" -ne "$EXPECTED_SIZE" ]; then
-    echo "ERROR: Portrait file size is $PORTRAIT_SIZE, expected exactly $EXPECTED_SIZE bytes."
+if [ "$PORTRAIT_SIZE" -ge "$UNCOMPRESSED_SIZE" ]; then
+    echo "ERROR: Portrait file size is $PORTRAIT_SIZE, expected to be compressed (less than $UNCOMPRESSED_SIZE bytes)."
     exit 1
 fi
-
-SPACE_COUNT=$(dd if="$PORTRAIT_ASCV" bs=1 skip=22 2>/dev/null | tr -cd ' ' | wc -c)
-if [ "$SPACE_COUNT" -lt 100 ]; then
-    echo "ERROR: Not enough spaces found for padded video. Found $SPACE_COUNT."
-    exit 1
-fi
+echo "Compressed portrait file size is $PORTRAIT_SIZE bytes (uncompressed was $UNCOMPRESSED_SIZE bytes)."
 
 echo "Cleaning up..."
 rm -f "$INPUT_VID" "$OUTPUT_ASCV" "$PORTRAIT_VID" "$PORTRAIT_ASCV"

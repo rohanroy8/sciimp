@@ -19,6 +19,16 @@ struct FileHeader {
     uint32_t fps_numerator;
     uint32_t fps_denominator;
 };
+
+enum class FrameType : uint8_t {
+    I_FRAME = 0,
+    P_FRAME = 1
+};
+
+struct FrameHeader {
+    FrameType type;
+    uint32_t compressed_size;
+};
 #pragma pack(pop)
 
 inline bool validate_magic(const FileHeader& h) {
