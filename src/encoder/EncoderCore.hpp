@@ -10,6 +10,9 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libswscale/swscale.h>
 #include <libavutil/frame.h>
+#include <libswresample/swresample.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/opt.h>
 }
 
 #include "ascv/format.hpp"
@@ -46,6 +49,14 @@ struct SwsContextDeleter {
     }
 };
 
+struct SwrContextDeleter {
+    void operator()(SwrContext* ctx) const {
+        if (ctx) {
+            swr_free(&ctx);
+        }
+    }
+};
+
 class FfmpegContext {
 public:
     std::unique_ptr<AVFormatContext, AVFormatContextDeleter> fmt_ctx;
@@ -54,6 +65,12 @@ public:
     std::unique_ptr<AVFrame, AVFrameDeleter> scaled_frame;
     std::unique_ptr<AVPacket, AVPacketDeleter> packet;
     std::unique_ptr<SwsContext, SwsContextDeleter> sws_ctx;
+
+    // Audio decoding support
+    int audio_stream_index = -1;
+    std::unique_ptr<AVCodecContext, AVCodecContextDeleter> audio_codec_ctx;
+    std::unique_ptr<AVFrame, AVFrameDeleter> audio_frame;
+    std::unique_ptr<SwrContext, SwrContextDeleter> swr_audio_ctx;
 
     int video_stream_index = -1;
     double fps = 0.0;

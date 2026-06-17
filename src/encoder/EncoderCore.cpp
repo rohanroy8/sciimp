@@ -10,6 +10,24 @@ namespace ascv::encoder {
 
 namespace {
 
+#pragma pack(push, 1)
+struct WavHeader {
+    char chunk_id[4] = {'R', 'I', 'F', 'F'};
+    uint32_t chunk_size = 0; // 36 + subchunk2_size
+    char format[4] = {'W', 'A', 'V', 'E'};
+    char subchunk1_id[4] = {'f', 'm', 't', ' '};
+    uint32_t subchunk1_size = 16;
+    uint16_t audio_format = 1; // PCM = 1
+    uint16_t num_channels = 2; // Stereo
+    uint32_t sample_rate = 44100;
+    uint32_t byte_rate = 44100 * 2 * 2;
+    uint16_t block_align = 2 * 2;
+    uint16_t bits_per_sample = 16;
+    char subchunk2_id[4] = {'d', 'a', 't', 'a'};
+    uint32_t subchunk2_size = 0;
+};
+#pragma pack(pop)
+
 struct RGB {
     uint8_t r, g, b;
 };
@@ -157,6 +175,66 @@ FfmpegContext::FfmpegContext(const std::string& input_path) {
 
     if (fps_den == 0) {
         throw std::runtime_error("Invalid framerate from video stream");
+    }
+
+    // Audio stream lookup
+    const AVCodec* audio_decoder = nullptr;
+    audio_stream_index = av_find_best_stream(fmt_ctx.get(), AVMEDIA_TYPE_AUDIO, -1, -1, &audio_decoder, 0);
+    if (audio_stream_index >= 0) {
+        AVStream* audio_stream = fmt_ctx->streams[audio_stream_index];
+        AVCodecContext* audio_codec_ctx_raw = avcodec_alloc_context3(audio_decoder);
+        if (!audio_codec_ctx_raw) {
+            throw std::runtime_error("Failed to allocate audio codec context");
+        }
+        audio_codec_ctx.reset(audio_codec_ctx_raw);
+
+        if (avcodec_parameters_to_context(audio_codec_ctx.get(), audio_stream->codecpar) < 0) {
+            throw std::runtime_error("Failed to copy audio codec parameters to context");
+        }
+
+        if (avcodec_open2(audio_codec_ctx.get(), audio_decoder, nullptr) < 0) {
+            throw std::runtime_error("Failed to open audio codec");
+        }
+
+        audio_frame.reset(av_frame_alloc());
+        if (!audio_frame) {
+            throw std::runtime_error("Failed to allocate audio frame");
+        }
+
+        // Initialize SwrContext
+        SwrContext* swr_ctx = nullptr;
+        AVChannelLayout in_ch_layout;
+        if (audio_codec_ctx->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC) {
+            av_channel_layout_default(&in_ch_layout, audio_codec_ctx->ch_layout.nb_channels);
+        } else {
+            av_channel_layout_copy(&in_ch_layout, &audio_codec_ctx->ch_layout);
+        }
+        AVChannelLayout out_ch_layout;
+        av_channel_layout_default(&out_ch_layout, 2);
+
+        int ret = swr_alloc_set_opts2(
+            &swr_ctx,
+            &out_ch_layout,
+            AV_SAMPLE_FMT_S16, // out sample format: 16-bit signed PCM
+            44100,             // out sample rate
+            &in_ch_layout,
+            audio_codec_ctx->sample_fmt,
+            audio_codec_ctx->sample_rate,
+            0, nullptr
+        );
+
+        av_channel_layout_uninit(&in_ch_layout);
+        av_channel_layout_uninit(&out_ch_layout);
+
+        if (ret < 0 || !swr_ctx) {
+            throw std::runtime_error("Failed to allocate SwrContext");
+        }
+
+        swr_audio_ctx.reset(swr_ctx);
+
+        if (swr_init(swr_audio_ctx.get()) < 0) {
+            throw std::runtime_error("Failed to initialize SwrContext");
+        }
     }
 }
 
@@ -358,11 +436,37 @@ void encode(const std::string& input_path, const std::string& output_path, int W
         frame_count++;
     };
 
+    std::vector<uint8_t> audio_data;
+
     while (av_read_frame(ctx.fmt_ctx.get(), ctx.packet.get()) >= 0) {
         if (ctx.packet->stream_index == ctx.video_stream_index) {
             if (avcodec_send_packet(ctx.codec_ctx.get(), ctx.packet.get()) >= 0) {
                 while (avcodec_receive_frame(ctx.codec_ctx.get(), ctx.frame.get()) == 0) {
                     process_and_write_frame();
+                }
+            }
+        } else if (ctx.audio_stream_index >= 0 && ctx.packet->stream_index == ctx.audio_stream_index) {
+            if (avcodec_send_packet(ctx.audio_codec_ctx.get(), ctx.packet.get()) >= 0) {
+                while (avcodec_receive_frame(ctx.audio_codec_ctx.get(), ctx.audio_frame.get()) == 0) {
+                    int64_t delay = swr_get_delay(ctx.swr_audio_ctx.get(), ctx.audio_frame->sample_rate);
+                    int out_samples = av_rescale_rnd(
+                        delay + ctx.audio_frame->nb_samples,
+                        44100,
+                        ctx.audio_frame->sample_rate,
+                        AV_ROUND_UP
+                    );
+                    std::vector<uint8_t> resampled_buf(out_samples * 4);
+                    uint8_t* out_data[1] = { resampled_buf.data() };
+                    int converted_samples = swr_convert(
+                        ctx.swr_audio_ctx.get(),
+                        out_data,
+                        out_samples,
+                        (const uint8_t**)ctx.audio_frame->data,
+                        ctx.audio_frame->nb_samples
+                    );
+                    if (converted_samples > 0) {
+                        audio_data.insert(audio_data.end(), resampled_buf.data(), resampled_buf.data() + converted_samples * 4);
+                    }
                 }
             }
         }
@@ -375,9 +479,47 @@ void encode(const std::string& input_path, const std::string& output_path, int W
         process_and_write_frame();
     }
 
+    // Flush audio decoder
+    if (ctx.audio_stream_index >= 0) {
+        avcodec_send_packet(ctx.audio_codec_ctx.get(), nullptr);
+        while (avcodec_receive_frame(ctx.audio_codec_ctx.get(), ctx.audio_frame.get()) == 0) {
+            int64_t delay = swr_get_delay(ctx.swr_audio_ctx.get(), ctx.audio_frame->sample_rate);
+            int out_samples = av_rescale_rnd(
+                delay + ctx.audio_frame->nb_samples,
+                44100,
+                ctx.audio_frame->sample_rate,
+                AV_ROUND_UP
+            );
+            std::vector<uint8_t> resampled_buf(out_samples * 4);
+            uint8_t* out_data[1] = { resampled_buf.data() };
+            int converted_samples = swr_convert(
+                ctx.swr_audio_ctx.get(),
+                out_data,
+                out_samples,
+                (const uint8_t**)ctx.audio_frame->data,
+                ctx.audio_frame->nb_samples
+            );
+            if (converted_samples > 0) {
+                audio_data.insert(audio_data.end(), resampled_buf.data(), resampled_buf.data() + converted_samples * 4);
+            }
+        }
+    }
+
     header.frame_count = frame_count;
     out.seekp(0);
     out.write(reinterpret_cast<const char*>(&header), sizeof(header));
+
+    // Write WAV sidecar if we have audio data
+    if (ctx.audio_stream_index >= 0 && !audio_data.empty()) {
+        std::ofstream wav_out(output_path + ".wav", std::ios::binary);
+        if (wav_out) {
+            WavHeader wav_header;
+            wav_header.chunk_size = 36 + static_cast<uint32_t>(audio_data.size());
+            wav_header.subchunk2_size = static_cast<uint32_t>(audio_data.size());
+            wav_out.write(reinterpret_cast<const char*>(&wav_header), sizeof(wav_header));
+            wav_out.write(reinterpret_cast<const char*>(audio_data.data()), audio_data.size());
+        }
+    }
 }
 
 } // namespace ascv::encoder

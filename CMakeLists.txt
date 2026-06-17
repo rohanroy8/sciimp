@@ -55,7 +55,7 @@ target_include_directories(miniaudio INTERFACE ${miniaudio_SOURCE_DIR})
 # System FFmpeg via PkgConfig
 # ==============================================================================
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavformat libavutil libswscale)
+pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavformat libavutil libswscale libswresample)
 
 # ==============================================================================
 # Subdirectories
