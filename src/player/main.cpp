@@ -13,9 +13,11 @@
 #  include <io.h>
 #  include <windows.h>
 #  define WRITE_FD(buf, len) _write(1, (buf), static_cast<unsigned int>(len))
+#  define WRITE_RESULT_T int
 #else
 #  include <unistd.h>
 #  define WRITE_FD(buf, len) write(STDOUT_FILENO, (buf), (len))
+#  define WRITE_RESULT_T ssize_t
 #endif
 
 int main(int argc, char* argv[]) {
@@ -95,7 +97,7 @@ int main(int argc, char* argv[]) {
         }
 
         // Write entire frame in one syscall
-        ssize_t written = WRITE_FD(out_buf.data(), pos);
+        WRITE_RESULT_T written = WRITE_FD(out_buf.data(), pos);
         (void)written;
 
         // Hybrid precision timing
