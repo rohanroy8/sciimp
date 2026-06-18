@@ -19,9 +19,10 @@ The project consists of two main C++ components:
 
 ### 2. The Terminal Player (`src/player/`)
 - **Execution:** A bare-metal, high-performance C++ executable utilizing raw terminal mode and zero-heap-allocation render loops to guarantee minimal CPU overhead.
+- **Index Generation:** Sequentially scans the `.ascv` file on startup to map the file offsets and types of all frames, enabling instant $O(1)$ seeking.
 - **Rendering:** Implements single-buffer ANSI escape flushes directly using POSIX `write` or Windows console writes to eliminate screen tearing.
 - **Audio Sync (Master Clock):** Integrates **MiniAudio** to play a sidecar `.wav` track, using the audio device sound cursor as the master clock to drive video frame pacing.
-- **Interactive Controls (Hotkeys):** Non-blocking input handling allowing pause, resume, forward/backward seeking, and quit capabilities.
+- **Interactive Controls (Hotkeys):** Non-blocking input handling allowing pause, resume, forward/backward seeking, and quit capabilities. (Disabled when reading from `stdin`).
 
 ## Technology Stack
 
@@ -79,7 +80,7 @@ Render the ASCII video inside your terminal:
 
 ## Binary File Structure (`.ascv`)
 
-### Global Header (17 Bytes)
+### Global Header (23 Bytes)
 - **Bytes 0-3 (Magic Number):** `ASCV` (`0x41 0x53 0x43 0x56`)
 - **Bytes 4-5 (Version):** Format version (Unsigned 16-bit integer)
 - **Bytes 6-7 (Width):** Target terminal columns (Unsigned 16-bit integer)
