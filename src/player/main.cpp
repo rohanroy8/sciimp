@@ -116,6 +116,16 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    std::vector<uint8_t> palette_data;
+    if (header.palette_colors > 0) {
+        palette_data.resize(header.palette_colors * 3);
+        if (fread(palette_data.data(), 1, palette_data.size(), input) != palette_data.size()) {
+            fprintf(stderr, "Error: Failed to read palette\n");
+            if (input != stdin) fclose(input);
+            return 1;
+        }
+    }
+
     std::vector<uint8_t> dict_buffer;
     if (header.dict_size > 0) {
         dict_buffer.resize(header.dict_size);
@@ -162,10 +172,8 @@ int main(int argc, char* argv[]) {
     size_t S = 1;
     if (color_mode == ascv::ColorMode::MONOCHROME) {
         S = 1;
-    } else if (color_mode == ascv::ColorMode::ANSI_16 || color_mode == ascv::ColorMode::ANSI_256) {
+    } else if (color_mode == ascv::ColorMode::ANSI_16 || color_mode == ascv::ColorMode::ANSI_256 || color_mode == ascv::ColorMode::RGB_24) {
         S = 2;
-    } else if (color_mode == ascv::ColorMode::RGB_24) {
-        S = 4;
     }
 
     const uint32_t total_cell_bytes = frame_cells * S;
@@ -174,17 +182,10 @@ int main(int argc, char* argv[]) {
     std::vector<char> current_frame(total_cell_bytes);
     if (color_mode == ascv::ColorMode::MONOCHROME) {
         std::fill(current_frame.begin(), current_frame.end(), ' ');
-    } else if (color_mode == ascv::ColorMode::ANSI_16 || color_mode == ascv::ColorMode::ANSI_256) {
+    } else if (color_mode == ascv::ColorMode::ANSI_16 || color_mode == ascv::ColorMode::ANSI_256 || color_mode == ascv::ColorMode::RGB_24) {
         for (size_t i = 0; i < frame_cells; ++i) {
             current_frame[i] = ' ';
             current_frame[frame_cells + i] = 0;
-        }
-    } else if (color_mode == ascv::ColorMode::RGB_24) {
-        for (size_t i = 0; i < frame_cells; ++i) {
-            current_frame[i] = ' ';
-            current_frame[frame_cells + i] = 0;
-            current_frame[frame_cells * 2 + i] = 0;
-            current_frame[frame_cells * 3 + i] = 0;
         }
     }
 
@@ -388,9 +389,13 @@ int main(int argc, char* argv[]) {
                                     for (uint16_t col = 0; col < header.width; ++col) {
                                         size_t idx_in_frame = row * header.width + col;
                                         char ch = current_frame[idx_in_frame];
-                                        uint8_t r = static_cast<uint8_t>(current_frame[frame_cells + idx_in_frame]);
-                                        uint8_t g = static_cast<uint8_t>(current_frame[frame_cells * 2 + idx_in_frame]);
-                                        uint8_t b = static_cast<uint8_t>(current_frame[frame_cells * 3 + idx_in_frame]);
+                                        uint8_t color_idx = static_cast<uint8_t>(current_frame[frame_cells + idx_in_frame]);
+                                        uint8_t r = 0, g = 0, b = 0;
+                                        if (static_cast<size_t>(color_idx) * 3 + 2 < palette_data.size()) {
+                                            r = palette_data[color_idx * 3];
+                                            g = palette_data[color_idx * 3 + 1];
+                                            b = palette_data[color_idx * 3 + 2];
+                                        }
                                         if (static_cast<int>(r) != last_r || static_cast<int>(g) != last_g || static_cast<int>(b) != last_b) {
                                             char code_buf[48];
                                             int len = snprintf(code_buf, sizeof(code_buf), "\x1b[38;2;%d;%d;%dm", static_cast<int>(r), static_cast<int>(g), static_cast<int>(b));
@@ -526,9 +531,13 @@ int main(int argc, char* argv[]) {
                         for (uint16_t col = 0; col < header.width; ++col) {
                             size_t idx_in_frame = row * header.width + col;
                             char ch = current_frame[idx_in_frame];
-                            uint8_t r = static_cast<uint8_t>(current_frame[frame_cells + idx_in_frame]);
-                            uint8_t g = static_cast<uint8_t>(current_frame[frame_cells * 2 + idx_in_frame]);
-                            uint8_t b = static_cast<uint8_t>(current_frame[frame_cells * 3 + idx_in_frame]);
+                            uint8_t color_idx = static_cast<uint8_t>(current_frame[frame_cells + idx_in_frame]);
+                            uint8_t r = 0, g = 0, b = 0;
+                            if (static_cast<size_t>(color_idx) * 3 + 2 < palette_data.size()) {
+                                r = palette_data[color_idx * 3];
+                                g = palette_data[color_idx * 3 + 1];
+                                b = palette_data[color_idx * 3 + 2];
+                            }
                             if (static_cast<int>(r) != last_r || static_cast<int>(g) != last_g || static_cast<int>(b) != last_b) {
                                 char code_buf[48];
                                 int len = snprintf(code_buf, sizeof(code_buf), "\x1b[38;2;%d;%d;%dm", static_cast<int>(r), static_cast<int>(g), static_cast<int>(b));

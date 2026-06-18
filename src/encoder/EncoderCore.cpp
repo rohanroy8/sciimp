@@ -7,6 +7,7 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <unordered_map>
 
 namespace ascv::encoder {
 
@@ -318,84 +319,26 @@ void encode(const std::string& input_path, const std::string& output_path, int W
     size_t S = 1;
     if (color_mode == ascv::ColorMode::MONOCHROME) {
         S = 1;
-    } else if (color_mode == ascv::ColorMode::ANSI_16) {
-        S = 2;
-    } else if (color_mode == ascv::ColorMode::ANSI_256) {
-        S = 2;
-    } else if (color_mode == ascv::ColorMode::RGB_24) {
-        S = 4;
+    } else {
+        S = 2; // ANSI_16, ANSI_256, RGB_24 all use 1 byte for color index
     }
 
     size_t total_cells = static_cast<size_t>(W) * H;
-    uint32_t frame_count = 0;
-    std::vector<char> frame_buffer(total_cells * S);
-    std::vector<char> previous_frame(total_cells * S);
 
-    auto fill_default_cells = [&](std::vector<char>& buf) {
-        if (color_mode == ascv::ColorMode::MONOCHROME) {
-            std::fill(buf.begin(), buf.end(), charset[0]);
-        } else if (color_mode == ascv::ColorMode::ANSI_16 || color_mode == ascv::ColorMode::ANSI_256) {
-            for (size_t i = 0; i < total_cells; ++i) {
-                buf[i] = charset[0];
-                buf[total_cells + i] = 0;
-            }
-        } else if (color_mode == ascv::ColorMode::RGB_24) {
-            for (size_t i = 0; i < total_cells; ++i) {
-                buf[i] = charset[0];
-                buf[total_cells + i] = 0;
-                buf[total_cells * 2 + i] = 0;
-                buf[total_cells * 3 + i] = 0;
-            }
-        }
+    struct RawFrame {
+        std::vector<char> chars;
+        std::vector<uint8_t> rgb;
     };
-
-    fill_default_cells(frame_buffer);
-    fill_default_cells(previous_frame);
-
-    struct BufferedFrame {
-        ascv::FrameType type;
-        std::vector<uint8_t> rle_data;
-    };
-    std::vector<BufferedFrame> buffered_frames;
-
-    auto write_frame = [&](const std::vector<char>& current_frame, uint32_t f_index) {
-        bool is_i_frame = (f_index % 30 == 0);
-        std::vector<uint8_t> rle_data;
-        ascv::FrameType f_type;
-        
-        if (is_i_frame) {
-            f_type = ascv::FrameType::I_FRAME;
-            rle_data = compress_rle(current_frame);
-        } else {
-            f_type = ascv::FrameType::P_FRAME;
-            std::vector<char> delta_frame(total_cells * S);
-            bool all_cells_match = true;
-            for (size_t i = 0; i < total_cells * S; ++i) {
-                char delta = current_frame[i] - previous_frame[i];
-                delta_frame[i] = delta;
-                if (delta != 0) {
-                    all_cells_match = false;
-                }
-            }
-            if (all_cells_match) {
-                f_type = ascv::FrameType::REPEAT_FRAME;
-                buffered_frames.push_back({f_type, {}});
-                previous_frame = current_frame;
-                return;
-            }
-            rle_data = compress_rle(delta_frame);
-        }
-
-        buffered_frames.push_back({f_type, std::move(rle_data)});
-        previous_frame = current_frame;
-    };
+    std::vector<RawFrame> raw_frames;
 
     auto process_and_write_frame = [&]() {
         sws_scale(ctx.sws_ctx.get(),
                   ctx.frame->data, ctx.frame->linesize, 0, ctx.codec_ctx->height,
                   ctx.scaled_frame->data, ctx.scaled_frame->linesize);
 
-        fill_default_cells(frame_buffer);
+        RawFrame rf;
+        rf.chars.assign(total_cells, charset[0]);
+        rf.rgb.assign(total_cells * 3, 0);
 
         for (int y = 0; y < scale.ch; ++y) {
             for (int x = 0; x < scale.cw; ++x) {
@@ -408,22 +351,14 @@ void encode(const std::string& input_path, const std::string& output_path, int W
                 char ch = map_gray_to_ascii(luminance, charset);
 
                 size_t cell_idx = ((scale.pad_y + y) * W + (scale.pad_x + x));
-                frame_buffer[cell_idx] = ch;
-
-                if (color_mode == ascv::ColorMode::ANSI_16) {
-                    frame_buffer[total_cells + cell_idx] = rgb_to_ansi16(r, g, b);
-                } else if (color_mode == ascv::ColorMode::ANSI_256) {
-                    frame_buffer[total_cells + cell_idx] = rgb_to_ansi256(r, g, b);
-                } else if (color_mode == ascv::ColorMode::RGB_24) {
-                    frame_buffer[total_cells + cell_idx] = r;
-                    frame_buffer[total_cells * 2 + cell_idx] = g;
-                    frame_buffer[total_cells * 3 + cell_idx] = b;
-                }
+                rf.chars[cell_idx] = ch;
+                rf.rgb[cell_idx * 3 + 0] = r;
+                rf.rgb[cell_idx * 3 + 1] = g;
+                rf.rgb[cell_idx * 3 + 2] = b;
             }
         }
 
-        write_frame(frame_buffer, frame_count);
-        frame_count++;
+        raw_frames.push_back(std::move(rf));
     };
 
     std::vector<uint8_t> audio_data;
@@ -495,6 +430,138 @@ void encode(const std::string& input_path, const std::string& output_path, int W
         }
     }
 
+    // Pass 2: Palette Generation
+    std::vector<uint8_t> palette_data;
+    if (color_mode == ascv::ColorMode::RGB_24) {
+        std::unordered_map<uint32_t, uint32_t> color_freq;
+        for (const auto& rf : raw_frames) {
+            for (size_t i = 0; i < rf.rgb.size(); i += 3) {
+                uint32_t c = (rf.rgb[i] << 16) | (rf.rgb[i+1] << 8) | rf.rgb[i+2];
+                color_freq[c]++;
+            }
+        }
+        
+        struct ColorCount {
+            uint32_t color;
+            uint32_t count;
+        };
+        std::vector<ColorCount> sorted_colors;
+        sorted_colors.reserve(color_freq.size());
+        for (const auto& pair : color_freq) {
+            sorted_colors.push_back({pair.first, pair.second});
+        }
+        
+        std::sort(sorted_colors.begin(), sorted_colors.end(), [](const ColorCount& a, const ColorCount& b) {
+            return a.count > b.count; // descending
+        });
+        
+        size_t palette_size = std::min<size_t>(256, sorted_colors.size());
+        palette_data.reserve(palette_size * 3);
+        for (size_t i = 0; i < palette_size; ++i) {
+            uint32_t c = sorted_colors[i].color;
+            palette_data.push_back(static_cast<uint8_t>((c >> 16) & 0xFF));
+            palette_data.push_back(static_cast<uint8_t>((c >> 8) & 0xFF));
+            palette_data.push_back(static_cast<uint8_t>(c & 0xFF));
+        }
+    }
+
+    // Pass 3: Quantization & Delta Encoding
+    struct BufferedFrame {
+        ascv::FrameType type;
+        std::vector<uint8_t> rle_data;
+    };
+    std::vector<BufferedFrame> buffered_frames;
+
+    std::vector<char> frame_buffer(total_cells * S);
+    std::vector<char> previous_frame(total_cells * S);
+
+    auto fill_default_cells = [&](std::vector<char>& buf) {
+        if (color_mode == ascv::ColorMode::MONOCHROME) {
+            std::fill(buf.begin(), buf.end(), charset[0]);
+        } else {
+            for (size_t i = 0; i < total_cells; ++i) {
+                buf[i] = charset[0];
+                buf[total_cells + i] = 0;
+            }
+        }
+    };
+    fill_default_cells(previous_frame);
+
+    auto write_frame = [&](const std::vector<char>& current_frame, uint32_t f_index) {
+        bool is_i_frame = (f_index % 30 == 0);
+        std::vector<uint8_t> rle_data;
+        ascv::FrameType f_type;
+        
+        if (is_i_frame) {
+            f_type = ascv::FrameType::I_FRAME;
+            rle_data = compress_rle(current_frame);
+        } else {
+            f_type = ascv::FrameType::P_FRAME;
+            std::vector<char> delta_frame(total_cells * S);
+            bool all_cells_match = true;
+            for (size_t i = 0; i < total_cells * S; ++i) {
+                char delta = current_frame[i] - previous_frame[i];
+                delta_frame[i] = delta;
+                if (delta != 0) {
+                    all_cells_match = false;
+                }
+            }
+            if (all_cells_match) {
+                f_type = ascv::FrameType::REPEAT_FRAME;
+                buffered_frames.push_back({f_type, {}});
+                previous_frame = current_frame;
+                return;
+            }
+            rle_data = compress_rle(delta_frame);
+        }
+
+        buffered_frames.push_back({f_type, std::move(rle_data)});
+        previous_frame = current_frame;
+    };
+
+    uint32_t frame_count = 0;
+    
+    std::unordered_map<uint32_t, uint8_t> color_cache;
+
+    for (const auto& rf : raw_frames) {
+        for (size_t i = 0; i < total_cells; ++i) {
+            frame_buffer[i] = rf.chars[i];
+            if (S == 2) {
+                uint8_t r = rf.rgb[i * 3 + 0];
+                uint8_t g = rf.rgb[i * 3 + 1];
+                uint8_t b = rf.rgb[i * 3 + 2];
+                if (color_mode == ascv::ColorMode::ANSI_16) {
+                    frame_buffer[total_cells + i] = rgb_to_ansi16(r, g, b);
+                } else if (color_mode == ascv::ColorMode::ANSI_256) {
+                    frame_buffer[total_cells + i] = rgb_to_ansi256(r, g, b);
+                } else if (color_mode == ascv::ColorMode::RGB_24) {
+                    uint32_t c = (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | b;
+                    auto it = color_cache.find(c);
+                    if (it != color_cache.end()) {
+                        frame_buffer[total_cells + i] = it->second;
+                    } else {
+                        uint8_t best_idx = 0;
+                        int min_dist = 10000000;
+                        for (size_t p = 0; p < palette_data.size(); p += 3) {
+                            int dr = static_cast<int>(r) - palette_data[p];
+                            int dg = static_cast<int>(g) - palette_data[p + 1];
+                            int db = static_cast<int>(b) - palette_data[p + 2];
+                            int dist = dr*dr + dg*dg + db*db;
+                            if (dist < min_dist) {
+                                min_dist = dist;
+                                best_idx = static_cast<uint8_t>(p / 3);
+                            }
+                        }
+                        color_cache[c] = best_idx;
+                        frame_buffer[total_cells + i] = best_idx;
+                    }
+                }
+            }
+        }
+        write_frame(frame_buffer, frame_count);
+        frame_count++;
+    }
+
     // Build training buffers
     std::vector<const std::vector<uint8_t>*> non_empty_frames;
     for (const auto& bf : buffered_frames) {
@@ -531,8 +598,12 @@ void encode(const std::string& input_path, const std::string& output_path, int W
     
     header.frame_count = frame_count;
     header.dict_size = static_cast<uint32_t>(dict_buffer.size());
+    header.palette_colors = static_cast<uint32_t>(palette_data.size() / 3);
     
     out.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    if (!palette_data.empty()) {
+        out.write(reinterpret_cast<const char*>(palette_data.data()), palette_data.size());
+    }
     if (!dict_buffer.empty()) {
         out.write(reinterpret_cast<const char*>(dict_buffer.data()), dict_buffer.size());
     }
