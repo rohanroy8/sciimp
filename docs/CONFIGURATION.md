@@ -23,13 +23,35 @@ The ASCV Encoder (`ascv_encoder`) is configured exclusively via command-line arg
   The set of ASCII characters to use for representing varying levels of luminance.
   *Default:* `" .:-=+*#%@"`
 
+- `-c, --color <string>`
+  Set the color encoding mode:
+  - `none` or `0`: Monochrome (Basic ASCII)
+  - `ansi16` or `1`: 16 ANSI colors
+  - `ansi256` or `2`: 256 ANSI colors
+  - `rgb24` or `3`: 24-bit True Color RGB (Default)
+
 ### Logging
 The encoder uses `spdlog` for execution logging. It currently outputs directly to standard output with the logging level hardcoded to `info`.
 
 ## 2. Player Configuration
 
-Currently, the ASCV Player (`ascv_player`) accepts no command-line arguments or configuration parameters (it only prints the format version and exits). 
-*VERIFY: Future iterations should accept an input `.ascv` file path and possible playback controls via CLI arguments.*
+The ASCV Player (`ascv_player`) accepts a path to an encoded `.ascv` file as a command-line argument.
+
+### Usage
+```bash
+./build/src/player/ascv_player <path-to-video.ascv>
+```
+If no file path is specified, the player defaults to reading the `.ascv` binary stream from standard input (`stdin`). Note that interactive controls (pausing and seeking) are disabled when reading from stdin because stdin is redirected to stream raw video data.
+
+### Audio Sidecar
+If an audio file with the suffix `.wav` exists at the same location as the input `.ascv` file (e.g. input file `movie.ascv` and sidecar `movie.ascv.wav`), the player will automatically detect it, initialize `miniaudio`, and play synchronized audio alongside the video.
+
+### Interactive Controls (Hotkeys)
+When playing video in an interactive terminal, the following keyboard hotkeys are supported:
+- **`Spacebar`**: Toggle pause and resume (pauses both video and audio).
+- **`Right Arrow` / `d` / `l`**: Seek forward 5 seconds.
+- **`Left Arrow` / `a` / `h`**: Seek backward 5 seconds (searches closest preceding keyframe, rebuilds frame state, and seeks audio cursor).
+- **`q`**: Quit playback gracefully and restore terminal mode.
 
 ## 3. Build Configuration
 
@@ -42,7 +64,7 @@ The project is built using CMake. Configuration relies primarily on CMake's nati
 ### CMake Options and Variables
 There are no custom `option()` flags defined in `CMakeLists.txt`. Standard CMake variables apply:
 - `CMAKE_BUILD_TYPE`: Standard CMake build types (e.g., `Release`, `Debug`).
-- `BUILD_TESTING`: Implicitly enabled via `enable_testing()`, which adds the Catch2 test suite (e.g., `test_aspect_ratio`).
+- `BUILD_TESTING`: Implicitly enabled via `enable_testing()`, which adds the Catch2 test suite.
 
 ### Dependencies
 
@@ -54,7 +76,7 @@ Dependencies are automatically fetched and built with hardcoded configurations t
 - **Catch2**: Tag `v3.7.1` (Test framework).
 
 ### System Requirements
-- **FFmpeg**: Must be pre-installed on the system and resolvable via `pkg-config` (`libavcodec`, `libavformat`, `libavutil`, `libswscale`). *VERIFY: Assuming FFmpeg 8.1+ as noted in project recommendations, though not enforced by the CMake script.*
+- **FFmpeg**: Must be pre-installed on the system and resolvable via `pkg-config` (`libavcodec`, `libavformat`, `libavutil`, `libswscale`). Enforced by CMake for the encoder binary.
 
 ## 4. Environment Variables
 

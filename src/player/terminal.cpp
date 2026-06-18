@@ -81,16 +81,18 @@ TerminalState::~TerminalState() {
 #else // POSIX
 
 TerminalState::TerminalState() {
-    if (!isatty(STDOUT_FILENO)) return;
+    if (!isatty(STDOUT_FILENO) || !isatty(STDIN_FILENO)) return;
 
     // Save terminal state
-    if (tcgetattr(STDOUT_FILENO, &orig_termios_) != 0) return;
+    if (tcgetattr(STDIN_FILENO, &orig_termios_) != 0) return;
     saved_ = true;
 
-    // Set raw mode: disable canonical mode and local echo
+    // Set raw mode: disable canonical mode and local echo, and make reads non-blocking
     struct termios raw = orig_termios_;
     raw.c_lflag &= ~static_cast<tcflag_t>(ICANON | ECHO);
-    tcsetattr(STDOUT_FILENO, TCSAFLUSH, &raw);
+    raw.c_cc[VMIN] = 0;
+    raw.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
 
     // Enter alternate screen buffer, then hide cursor
     const char enter[] = "\x1b[?1049h\x1b[?25l";
@@ -105,7 +107,7 @@ TerminalState::~TerminalState() {
     write(STDOUT_FILENO, leave, sizeof(leave) - 1);
 
     // Restore original terminal state
-    tcsetattr(STDOUT_FILENO, TCSAFLUSH, &orig_termios_);
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios_);
 }
 
 #endif // _WIN32 / POSIX

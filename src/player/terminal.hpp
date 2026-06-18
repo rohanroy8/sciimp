@@ -25,6 +25,8 @@ public:
     TerminalState(const TerminalState&) = delete;
     TerminalState& operator=(const TerminalState&) = delete;
 
+    bool is_raw() const { return saved_; }
+
 private:
     bool saved_{false};
 
