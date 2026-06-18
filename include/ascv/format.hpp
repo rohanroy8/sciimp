@@ -7,7 +7,7 @@
 namespace ascv {
 
 constexpr uint8_t MAGIC[4] = {'A', 'S', 'C', 'V'};
-constexpr uint16_t FORMAT_VERSION = 2;
+constexpr uint16_t FORMAT_VERSION = 3;
 
 enum class ColorMode : uint8_t {
     MONOCHROME = 0,
@@ -26,11 +26,13 @@ struct FileHeader {
     uint32_t fps_numerator;
     uint32_t fps_denominator;
     uint8_t  color_mode; // ascv::ColorMode mapped to uint8_t
+    uint32_t dict_size;
 };
 
 enum class FrameType : uint8_t {
     I_FRAME = 0,
-    P_FRAME = 1
+    P_FRAME = 1,
+    REPEAT_FRAME = 2
 };
 
 struct FrameHeader {

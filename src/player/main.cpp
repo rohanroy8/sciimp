@@ -116,6 +116,21 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    std::vector<uint8_t> dict_buffer;
+    if (header.dict_size > 0) {
+        dict_buffer.resize(header.dict_size);
+        if (fread(dict_buffer.data(), 1, header.dict_size, input) != header.dict_size) {
+            fprintf(stderr, "Error: Failed to read ZSTD dictionary\n");
+            if (input != stdin) fclose(input);
+            return 1;
+        }
+    }
+
+    ZSTD_DCtx* dctx = ZSTD_createDCtx();
+    if (header.dict_size > 0) {
+        ZSTD_DCtx_loadDictionary(dctx, dict_buffer.data(), dict_buffer.size());
+    }
+
     std::vector<FrameInfo> frame_index;
     bool is_seekable = (input != stdin);
     if (is_seekable) {
@@ -161,15 +176,15 @@ int main(int argc, char* argv[]) {
         std::fill(current_frame.begin(), current_frame.end(), ' ');
     } else if (color_mode == ascv::ColorMode::ANSI_16 || color_mode == ascv::ColorMode::ANSI_256) {
         for (size_t i = 0; i < frame_cells; ++i) {
-            current_frame[i * 2 + 0] = ' ';
-            current_frame[i * 2 + 1] = 0;
+            current_frame[i] = ' ';
+            current_frame[frame_cells + i] = 0;
         }
     } else if (color_mode == ascv::ColorMode::RGB_24) {
         for (size_t i = 0; i < frame_cells; ++i) {
-            current_frame[i * 4 + 0] = ' ';
-            current_frame[i * 4 + 1] = 0;
-            current_frame[i * 4 + 2] = 0;
-            current_frame[i * 4 + 3] = 0;
+            current_frame[i] = ' ';
+            current_frame[frame_cells + i] = 0;
+            current_frame[frame_cells * 2 + i] = 0;
+            current_frame[frame_cells * 3 + i] = 0;
         }
     }
 
@@ -303,6 +318,11 @@ int main(int argc, char* argv[]) {
                                 break;
                             }
 
+                            if (f_header.type == ascv::FrameType::REPEAT_FRAME) {
+                                idx++;
+                                continue;
+                            }
+
                             compressed_data.resize(f_header.compressed_size);
                             if (fread(compressed_data.data(), 1, f_header.compressed_size, input) != f_header.compressed_size) {
                                 seek_ok = false;
@@ -314,8 +334,8 @@ int main(int argc, char* argv[]) {
                                 decompressed_bound = 2 * total_cell_bytes + 256;
                             }
                             rle_buffer.resize(decompressed_bound);
-                            size_t decompressed_size = ZSTD_decompress(rle_buffer.data(), rle_buffer.size(),
-                                                                       compressed_data.data(), compressed_data.size());
+                            size_t decompressed_size = ZSTD_decompressDCtx(dctx, rle_buffer.data(), rle_buffer.size(),
+                                                                           compressed_data.data(), compressed_data.size());
                             if (ZSTD_isError(decompressed_size)) {
                                 seek_ok = false;
                                 break;
@@ -327,11 +347,9 @@ int main(int argc, char* argv[]) {
                             if (f_header.type == ascv::FrameType::I_FRAME) {
                                 std::copy(decompressed_data.begin(), decompressed_data.end(), current_frame.begin());
                             } else {
-                                for (size_t i = 0; i < frame_cells; ++i) {
-                                    if (decompressed_data[i * S] != '\0') {
-                                        for (size_t b = 0; b < S; ++b) {
-                                            current_frame[i * S + b] = decompressed_data[i * S + b];
-                                        }
+                                for (size_t i = 0; i < total_cell_bytes; ++i) {
+                                    if (decompressed_data[i] != '\0') {
+                                        current_frame[i] = decompressed_data[i];
                                     }
                                 }
                             }
@@ -353,8 +371,8 @@ int main(int argc, char* argv[]) {
                                 for (uint16_t row = 0; row < header.height; ++row) {
                                     for (uint16_t col = 0; col < header.width; ++col) {
                                         size_t idx_in_frame = row * header.width + col;
-                                        char ch = current_frame[idx_in_frame * 2 + 0];
-                                        uint8_t color_idx = static_cast<uint8_t>(current_frame[idx_in_frame * 2 + 1]);
+                                        char ch = current_frame[idx_in_frame];
+                                        uint8_t color_idx = static_cast<uint8_t>(current_frame[frame_cells + idx_in_frame]);
                                         if (static_cast<int>(color_idx) != last_fg_idx) {
                                             char code_buf[32];
                                             int len = snprintf(code_buf, sizeof(code_buf), "\x1b[38;5;%dm", static_cast<int>(color_idx));
@@ -371,10 +389,10 @@ int main(int argc, char* argv[]) {
                                 for (uint16_t row = 0; row < header.height; ++row) {
                                     for (uint16_t col = 0; col < header.width; ++col) {
                                         size_t idx_in_frame = row * header.width + col;
-                                        char ch = current_frame[idx_in_frame * 4 + 0];
-                                        uint8_t r = static_cast<uint8_t>(current_frame[idx_in_frame * 4 + 1]);
-                                        uint8_t g = static_cast<uint8_t>(current_frame[idx_in_frame * 4 + 2]);
-                                        uint8_t b = static_cast<uint8_t>(current_frame[idx_in_frame * 4 + 3]);
+                                        char ch = current_frame[idx_in_frame];
+                                        uint8_t r = static_cast<uint8_t>(current_frame[frame_cells + idx_in_frame]);
+                                        uint8_t g = static_cast<uint8_t>(current_frame[frame_cells * 2 + idx_in_frame]);
+                                        uint8_t b = static_cast<uint8_t>(current_frame[frame_cells * 3 + idx_in_frame]);
                                         if (static_cast<int>(r) != last_r || static_cast<int>(g) != last_g || static_cast<int>(b) != last_b) {
                                             char code_buf[48];
                                             int len = snprintf(code_buf, sizeof(code_buf), "\x1b[38;2;%d;%d;%dm", static_cast<int>(r), static_cast<int>(g), static_cast<int>(b));
@@ -438,6 +456,12 @@ int main(int argc, char* argv[]) {
                     break;
                 }
 
+                if (f_header.type == ascv::FrameType::REPEAT_FRAME) {
+                    current_decoded_frame_idx++;
+                    frame_updated = true;
+                    continue;
+                }
+
                 compressed_data.resize(f_header.compressed_size);
                 if (fread(compressed_data.data(), 1, f_header.compressed_size, input) != f_header.compressed_size) {
                     fprintf(stderr, "Error: Unexpected end of file at frame %u (reading payload)\n", current_decoded_frame_idx);
@@ -449,8 +473,8 @@ int main(int argc, char* argv[]) {
                     decompressed_bound = 2 * total_cell_bytes + 256;
                 }
                 rle_buffer.resize(decompressed_bound);
-                size_t decompressed_size = ZSTD_decompress(rle_buffer.data(), rle_buffer.size(),
-                                                           compressed_data.data(), compressed_data.size());
+                size_t decompressed_size = ZSTD_decompressDCtx(dctx, rle_buffer.data(), rle_buffer.size(),
+                                                               compressed_data.data(), compressed_data.size());
                 if (ZSTD_isError(decompressed_size)) {
                     fprintf(stderr, "Error: ZSTD decompression failed at frame %u: %s\n", current_decoded_frame_idx, ZSTD_getErrorName(decompressed_size));
                     break;
@@ -462,11 +486,9 @@ int main(int argc, char* argv[]) {
                 if (f_header.type == ascv::FrameType::I_FRAME) {
                     std::copy(decompressed_data.begin(), decompressed_data.end(), current_frame.begin());
                 } else {
-                    for (size_t i = 0; i < frame_cells; ++i) {
-                        if (decompressed_data[i * S] != '\0') {
-                            for (size_t b = 0; b < S; ++b) {
-                                current_frame[i * S + b] = decompressed_data[i * S + b];
-                            }
+                    for (size_t i = 0; i < total_cell_bytes; ++i) {
+                        if (decompressed_data[i] != '\0') {
+                            current_frame[i] = decompressed_data[i];
                         }
                     }
                 }
@@ -489,8 +511,8 @@ int main(int argc, char* argv[]) {
                     for (uint16_t row = 0; row < header.height; ++row) {
                         for (uint16_t col = 0; col < header.width; ++col) {
                             size_t idx_in_frame = row * header.width + col;
-                            char ch = current_frame[idx_in_frame * 2 + 0];
-                            uint8_t color_idx = static_cast<uint8_t>(current_frame[idx_in_frame * 2 + 1]);
+                            char ch = current_frame[idx_in_frame];
+                            uint8_t color_idx = static_cast<uint8_t>(current_frame[frame_cells + idx_in_frame]);
                             if (static_cast<int>(color_idx) != last_fg_idx) {
                                 char code_buf[32];
                                 int len = snprintf(code_buf, sizeof(code_buf), "\x1b[38;5;%dm", static_cast<int>(color_idx));
@@ -507,10 +529,10 @@ int main(int argc, char* argv[]) {
                     for (uint16_t row = 0; row < header.height; ++row) {
                         for (uint16_t col = 0; col < header.width; ++col) {
                             size_t idx_in_frame = row * header.width + col;
-                            char ch = current_frame[idx_in_frame * 4 + 0];
-                            uint8_t r = static_cast<uint8_t>(current_frame[idx_in_frame * 4 + 1]);
-                            uint8_t g = static_cast<uint8_t>(current_frame[idx_in_frame * 4 + 2]);
-                            uint8_t b = static_cast<uint8_t>(current_frame[idx_in_frame * 4 + 3]);
+                            char ch = current_frame[idx_in_frame];
+                            uint8_t r = static_cast<uint8_t>(current_frame[frame_cells + idx_in_frame]);
+                            uint8_t g = static_cast<uint8_t>(current_frame[frame_cells * 2 + idx_in_frame]);
+                            uint8_t b = static_cast<uint8_t>(current_frame[frame_cells * 3 + idx_in_frame]);
                             if (static_cast<int>(r) != last_r || static_cast<int>(g) != last_g || static_cast<int>(b) != last_b) {
                                 char code_buf[48];
                                 int len = snprintf(code_buf, sizeof(code_buf), "\x1b[38;2;%d;%d;%dm", static_cast<int>(r), static_cast<int>(g), static_cast<int>(b));
@@ -576,6 +598,8 @@ int main(int argc, char* argv[]) {
         ma_sound_uninit(&sound);
         ma_engine_uninit(&engine);
     }
+
+    ZSTD_freeDCtx(dctx);
 
     if (input != stdin) fclose(input);
     // TerminalState destructor restores cursor and terminal mode automatically

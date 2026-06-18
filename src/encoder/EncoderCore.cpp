@@ -1,10 +1,12 @@
 #include "EncoderCore.hpp"
 #include "ascv/format.hpp"
 #include <zstd.h>
+#include <zdict.h>
 #include <stdexcept>
 #include <fstream>
 #include <cmath>
 #include <vector>
+#include <algorithm>
 
 namespace ascv::encoder {
 
@@ -306,8 +308,6 @@ void encode(const std::string& input_path, const std::string& output_path, int W
     header.fps_denominator = ctx.fps_den;
     header.color_mode = static_cast<uint8_t>(color_mode);
 
-    out.write(reinterpret_cast<const char*>(&header), sizeof(header));
-
     ctx.scaled_frame->format = AV_PIX_FMT_RGB24;
     ctx.scaled_frame->width = scale.cw;
     ctx.scaled_frame->height = scale.ch;
@@ -336,15 +336,15 @@ void encode(const std::string& input_path, const std::string& output_path, int W
             std::fill(buf.begin(), buf.end(), charset[0]);
         } else if (color_mode == ascv::ColorMode::ANSI_16 || color_mode == ascv::ColorMode::ANSI_256) {
             for (size_t i = 0; i < total_cells; ++i) {
-                buf[i * 2 + 0] = charset[0];
-                buf[i * 2 + 1] = 0;
+                buf[i] = charset[0];
+                buf[total_cells + i] = 0;
             }
         } else if (color_mode == ascv::ColorMode::RGB_24) {
             for (size_t i = 0; i < total_cells; ++i) {
-                buf[i * 4 + 0] = charset[0];
-                buf[i * 4 + 1] = 0;
-                buf[i * 4 + 2] = 0;
-                buf[i * 4 + 3] = 0;
+                buf[i] = charset[0];
+                buf[total_cells + i] = 0;
+                buf[total_cells * 2 + i] = 0;
+                buf[total_cells * 3 + i] = 0;
             }
         }
     };
@@ -352,51 +352,42 @@ void encode(const std::string& input_path, const std::string& output_path, int W
     fill_default_cells(frame_buffer);
     fill_default_cells(previous_frame);
 
+    struct BufferedFrame {
+        ascv::FrameType type;
+        std::vector<uint8_t> rle_data;
+    };
+    std::vector<BufferedFrame> buffered_frames;
+
     auto write_frame = [&](const std::vector<char>& current_frame, uint32_t f_index) {
         bool is_i_frame = (f_index % 30 == 0);
         std::vector<uint8_t> rle_data;
-        ascv::FrameHeader f_header{};
+        ascv::FrameType f_type;
         
         if (is_i_frame) {
-            f_header.type = ascv::FrameType::I_FRAME;
+            f_type = ascv::FrameType::I_FRAME;
             rle_data = compress_rle(current_frame);
         } else {
-            f_header.type = ascv::FrameType::P_FRAME;
+            f_type = ascv::FrameType::P_FRAME;
             std::vector<char> delta_frame(total_cells * S);
-            for (size_t i = 0; i < total_cells; ++i) {
-                bool cell_matches = true;
-                for (size_t b = 0; b < S; ++b) {
-                    if (current_frame[i * S + b] != previous_frame[i * S + b]) {
-                        cell_matches = false;
-                        break;
-                    }
-                }
-                if (cell_matches) {
-                    for (size_t b = 0; b < S; ++b) {
-                        delta_frame[i * S + b] = '\0';
-                    }
+            bool all_cells_match = true;
+            for (size_t i = 0; i < total_cells * S; ++i) {
+                if (current_frame[i] != previous_frame[i]) {
+                    all_cells_match = false;
+                    delta_frame[i] = current_frame[i];
                 } else {
-                    for (size_t b = 0; b < S; ++b) {
-                        delta_frame[i * S + b] = current_frame[i * S + b];
-                    }
+                    delta_frame[i] = '\0';
                 }
+            }
+            if (all_cells_match) {
+                f_type = ascv::FrameType::REPEAT_FRAME;
+                buffered_frames.push_back({f_type, {}});
+                previous_frame = current_frame;
+                return;
             }
             rle_data = compress_rle(delta_frame);
         }
 
-        size_t max_zstd_size = ZSTD_compressBound(rle_data.size());
-        std::vector<uint8_t> compressed_data(max_zstd_size);
-        size_t c_size = ZSTD_compress(compressed_data.data(), compressed_data.size(),
-                                      rle_data.data(), rle_data.size(), 3);
-        if (ZSTD_isError(c_size)) {
-            throw std::runtime_error("ZSTD compression failed: " + std::string(ZSTD_getErrorName(c_size)));
-        }
-        compressed_data.resize(c_size);
-
-        f_header.compressed_size = static_cast<uint32_t>(c_size);
-        out.write(reinterpret_cast<const char*>(&f_header), sizeof(f_header));
-        out.write(reinterpret_cast<const char*>(compressed_data.data()), compressed_data.size());
-
+        buffered_frames.push_back({f_type, std::move(rle_data)});
         previous_frame = current_frame;
     };
 
@@ -417,17 +408,17 @@ void encode(const std::string& input_path, const std::string& output_path, int W
                 uint8_t luminance = static_cast<uint8_t>(std::round(0.299 * r + 0.587 * g + 0.114 * b));
                 char ch = map_gray_to_ascii(luminance, charset);
 
-                size_t cell_idx = ((scale.pad_y + y) * W + (scale.pad_x + x)) * S;
-                frame_buffer[cell_idx + 0] = ch;
+                size_t cell_idx = ((scale.pad_y + y) * W + (scale.pad_x + x));
+                frame_buffer[cell_idx] = ch;
 
                 if (color_mode == ascv::ColorMode::ANSI_16) {
-                    frame_buffer[cell_idx + 1] = rgb_to_ansi16(r, g, b);
+                    frame_buffer[total_cells + cell_idx] = rgb_to_ansi16(r, g, b);
                 } else if (color_mode == ascv::ColorMode::ANSI_256) {
-                    frame_buffer[cell_idx + 1] = rgb_to_ansi256(r, g, b);
+                    frame_buffer[total_cells + cell_idx] = rgb_to_ansi256(r, g, b);
                 } else if (color_mode == ascv::ColorMode::RGB_24) {
-                    frame_buffer[cell_idx + 1] = r;
-                    frame_buffer[cell_idx + 2] = g;
-                    frame_buffer[cell_idx + 3] = b;
+                    frame_buffer[total_cells + cell_idx] = r;
+                    frame_buffer[total_cells * 2 + cell_idx] = g;
+                    frame_buffer[total_cells * 3 + cell_idx] = b;
                 }
             }
         }
@@ -505,9 +496,77 @@ void encode(const std::string& input_path, const std::string& output_path, int W
         }
     }
 
+    // Build training buffers
+    std::vector<const std::vector<uint8_t>*> non_empty_frames;
+    for (const auto& bf : buffered_frames) {
+        if (bf.type != ascv::FrameType::REPEAT_FRAME && !bf.rle_data.empty()) {
+            non_empty_frames.push_back(&bf.rle_data);
+        }
+    }
+    
+    size_t sample_count = std::min<size_t>(5000, non_empty_frames.size());
+    double step = non_empty_frames.size() > 0 ? static_cast<double>(non_empty_frames.size()) / sample_count : 1.0;
+    
+    std::vector<uint8_t> samplesBuffer;
+    std::vector<size_t> samplesSizes;
+    for (size_t i = 0; i < sample_count; ++i) {
+        size_t idx = static_cast<size_t>(i * step);
+        if (idx >= non_empty_frames.size()) idx = non_empty_frames.size() - 1;
+        const auto* data = non_empty_frames[idx];
+        samplesBuffer.insert(samplesBuffer.end(), data->begin(), data->end());
+        samplesSizes.push_back(data->size());
+    }
+    
+    std::vector<uint8_t> dict_buffer(100 * 1024); // 100KB
+    size_t dict_size = 0;
+    if (!samplesSizes.empty()) {
+        dict_size = ZDICT_trainFromBuffer(dict_buffer.data(), dict_buffer.size(),
+                                          samplesBuffer.data(), samplesSizes.data(), samplesSizes.size());
+        if (ZDICT_isError(dict_size)) {
+            throw std::runtime_error("ZDICT training failed: " + std::string(ZDICT_getErrorName(dict_size)));
+        }
+        dict_buffer.resize(dict_size);
+    } else {
+        dict_buffer.clear();
+    }
+    
     header.frame_count = frame_count;
-    out.seekp(0);
+    header.dict_size = static_cast<uint32_t>(dict_buffer.size());
+    
     out.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    if (!dict_buffer.empty()) {
+        out.write(reinterpret_cast<const char*>(dict_buffer.data()), dict_buffer.size());
+    }
+    
+    ZSTD_CCtx* cctx = ZSTD_createCCtx();
+    if (!dict_buffer.empty()) {
+        ZSTD_CCtx_loadDictionary(cctx, dict_buffer.data(), dict_buffer.size());
+    }
+    
+    for (const auto& bf : buffered_frames) {
+        ascv::FrameHeader f_header{};
+        f_header.type = bf.type;
+        
+        if (bf.type == ascv::FrameType::REPEAT_FRAME) {
+            f_header.compressed_size = 0;
+            out.write(reinterpret_cast<const char*>(&f_header), sizeof(f_header));
+        } else {
+            size_t max_zstd_size = ZSTD_compressBound(bf.rle_data.size());
+            std::vector<uint8_t> compressed_data(max_zstd_size);
+            
+            size_t c_size = ZSTD_compressCCtx(cctx, compressed_data.data(), compressed_data.size(),
+                                              bf.rle_data.data(), bf.rle_data.size(), 3);
+            if (ZSTD_isError(c_size)) {
+                ZSTD_freeCCtx(cctx);
+                throw std::runtime_error("ZSTD compression failed: " + std::string(ZSTD_getErrorName(c_size)));
+            }
+            
+            f_header.compressed_size = static_cast<uint32_t>(c_size);
+            out.write(reinterpret_cast<const char*>(&f_header), sizeof(f_header));
+            out.write(reinterpret_cast<const char*>(compressed_data.data()), c_size);
+        }
+    }
+    ZSTD_freeCCtx(cctx);
 
     // Write WAV sidecar if we have audio data
     if (ctx.audio_stream_index >= 0 && !audio_data.empty()) {
