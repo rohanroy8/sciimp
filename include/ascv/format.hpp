@@ -7,7 +7,7 @@
 namespace ascv {
 
 constexpr uint8_t MAGIC[4] = {'A', 'S', 'C', 'V'};
-constexpr uint16_t FORMAT_VERSION = 4;
+constexpr uint16_t FORMAT_VERSION = 5;
 
 enum class ColorMode : uint8_t {
     MONOCHROME = 0,
@@ -16,7 +16,23 @@ enum class ColorMode : uint8_t {
     RGB_24 = 3
 };
 
+enum class FrameType : uint8_t {
+    I_FRAME = 0,
+    P_FRAME = 1,
+    REPEAT_FRAME = 2,
+    M_FRAME = 3
+};
+
 #pragma pack(push, 1)
+struct MoveBlock {
+    uint16_t dest_x;
+    uint16_t dest_y;
+    uint16_t src_x;
+    uint16_t src_y;
+    uint16_t width;
+    uint16_t height;
+};
+
 struct FileHeader {
     uint8_t  magic[4];          // 'A', 'S', 'C', 'V'
     uint16_t version;           // FORMAT_VERSION
@@ -30,11 +46,6 @@ struct FileHeader {
     uint32_t dict_size;
 };
 
-enum class FrameType : uint8_t {
-    I_FRAME = 0,
-    P_FRAME = 1,
-    REPEAT_FRAME = 2
-};
 
 struct FrameHeader {
     FrameType type;

@@ -180,6 +180,7 @@ int main(int argc, char* argv[]) {
 
     // Maintain a persistent frame buffer across iterations
     std::vector<char> current_frame(total_cell_bytes);
+    std::vector<char> predicted_frame(total_cell_bytes);
     if (color_mode == ascv::ColorMode::MONOCHROME) {
         std::fill(current_frame.begin(), current_frame.end(), ' ');
     } else if (color_mode == ascv::ColorMode::ANSI_16 || color_mode == ascv::ColorMode::ANSI_256 || color_mode == ascv::ColorMode::RGB_24) {
@@ -343,13 +344,46 @@ int main(int argc, char* argv[]) {
                             }
                             rle_buffer.resize(decompressed_size);
 
-                            decompress_rle(rle_buffer.data(), rle_buffer.size(), total_cell_bytes, decompressed_data);
+                            if (f_header.type == ascv::FrameType::M_FRAME) {
+                                if (rle_buffer.size() >= 1) {
+                                    uint8_t num_moves = rle_buffer[0];
+                                    size_t moves_size = num_moves * sizeof(ascv::MoveBlock);
+                                    if (rle_buffer.size() >= 1 + moves_size) {
+                                        const ascv::MoveBlock* moves = reinterpret_cast<const ascv::MoveBlock*>(rle_buffer.data() + 1);
+                                        const uint8_t* rle_payload = rle_buffer.data() + 1 + moves_size;
+                                        size_t rle_payload_size = rle_buffer.size() - (1 + moves_size);
 
-                            if (f_header.type == ascv::FrameType::I_FRAME) {
-                                std::copy(decompressed_data.begin(), decompressed_data.end(), current_frame.begin());
+                                        decompress_rle(rle_payload, rle_payload_size, total_cell_bytes, decompressed_data);
+
+                                        std::copy(current_frame.begin(), current_frame.end(), predicted_frame.begin());
+                                        for (int m = 0; m < num_moves; ++m) {
+                                            const auto& mb = moves[m];
+                                            for(uint16_t y = 0; y < mb.height; ++y) {
+                                                for(uint16_t x = 0; x < mb.width; ++x) {
+                                                    for(size_t s = 0; s < S; ++s) {
+                                                        size_t dest_idx = ((mb.dest_y + y) * static_cast<size_t>(header.width) + (mb.dest_x + x)) * S + s;
+                                                        size_t src_idx = ((mb.src_y + y) * static_cast<size_t>(header.width) + (mb.src_x + x)) * S + s;
+                                                        if (dest_idx < total_cell_bytes && src_idx < total_cell_bytes) {
+                                                            predicted_frame[dest_idx] = current_frame[src_idx];
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        for (size_t i = 0; i < total_cell_bytes; ++i) {
+                                            current_frame[i] = predicted_frame[i] + decompressed_data[i];
+                                        }
+                                    }
+                                }
                             } else {
-                                for (size_t i = 0; i < total_cell_bytes; ++i) {
-                                    current_frame[i] += decompressed_data[i];
+                                decompress_rle(rle_buffer.data(), rle_buffer.size(), total_cell_bytes, decompressed_data);
+
+                                if (f_header.type == ascv::FrameType::I_FRAME) {
+                                    std::copy(decompressed_data.begin(), decompressed_data.end(), current_frame.begin());
+                                } else {
+                                    for (size_t i = 0; i < total_cell_bytes; ++i) {
+                                        current_frame[i] += decompressed_data[i];
+                                    }
                                 }
                             }
                             idx++;
@@ -484,13 +518,46 @@ int main(int argc, char* argv[]) {
                 }
                 rle_buffer.resize(decompressed_size);
 
-                decompress_rle(rle_buffer.data(), rle_buffer.size(), total_cell_bytes, decompressed_data);
+                if (f_header.type == ascv::FrameType::M_FRAME) {
+                    if (rle_buffer.size() >= 1) {
+                        uint8_t num_moves = rle_buffer[0];
+                        size_t moves_size = num_moves * sizeof(ascv::MoveBlock);
+                        if (rle_buffer.size() >= 1 + moves_size) {
+                            const ascv::MoveBlock* moves = reinterpret_cast<const ascv::MoveBlock*>(rle_buffer.data() + 1);
+                            const uint8_t* rle_payload = rle_buffer.data() + 1 + moves_size;
+                            size_t rle_payload_size = rle_buffer.size() - (1 + moves_size);
 
-                if (f_header.type == ascv::FrameType::I_FRAME) {
-                    std::copy(decompressed_data.begin(), decompressed_data.end(), current_frame.begin());
+                            decompress_rle(rle_payload, rle_payload_size, total_cell_bytes, decompressed_data);
+
+                            std::copy(current_frame.begin(), current_frame.end(), predicted_frame.begin());
+                            for (int m = 0; m < num_moves; ++m) {
+                                const auto& mb = moves[m];
+                                for(uint16_t y = 0; y < mb.height; ++y) {
+                                    for(uint16_t x = 0; x < mb.width; ++x) {
+                                        for(size_t s = 0; s < S; ++s) {
+                                            size_t dest_idx = ((mb.dest_y + y) * static_cast<size_t>(header.width) + (mb.dest_x + x)) * S + s;
+                                            size_t src_idx = ((mb.src_y + y) * static_cast<size_t>(header.width) + (mb.src_x + x)) * S + s;
+                                            if (dest_idx < total_cell_bytes && src_idx < total_cell_bytes) {
+                                                predicted_frame[dest_idx] = current_frame[src_idx];
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            for (size_t i = 0; i < total_cell_bytes; ++i) {
+                                current_frame[i] = predicted_frame[i] + decompressed_data[i];
+                            }
+                        }
+                    }
                 } else {
-                    for (size_t i = 0; i < total_cell_bytes; ++i) {
-                        current_frame[i] += decompressed_data[i];
+                    decompress_rle(rle_buffer.data(), rle_buffer.size(), total_cell_bytes, decompressed_data);
+
+                    if (f_header.type == ascv::FrameType::I_FRAME) {
+                        std::copy(decompressed_data.begin(), decompressed_data.end(), current_frame.begin());
+                    } else {
+                        for (size_t i = 0; i < total_cell_bytes; ++i) {
+                            current_frame[i] += decompressed_data[i];
+                        }
                     }
                 }
                 current_decoded_frame_idx++;

@@ -496,6 +496,98 @@ void encode(const std::string& input_path, const std::string& output_path, int W
             f_type = ascv::FrameType::I_FRAME;
             rle_data = compress_rle(current_frame);
         } else {
+            size_t m00_matches = 0;
+            for (size_t i = 0; i < total_cells; ++i) {
+                bool match = true;
+                for (size_t s = 0; s < S; ++s) {
+                    if (current_frame[i * S + s] != previous_frame[i * S + s]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) m00_matches++;
+            }
+            
+            int best_dx = 0;
+            int best_dy = 0;
+            size_t max_matches = m00_matches;
+            
+            for (int dy = -3; dy <= 3; ++dy) {
+                for (int dx = -5; dx <= 5; ++dx) {
+                    if (dx == 0 && dy == 0) continue;
+                    
+                    size_t matches = 0;
+                    for (int y = 0; y < H; ++y) {
+                        for (int x = 0; x < W; ++x) {
+                            int sx = x - dx;
+                            int sy = y - dy;
+                            if (sx >= 0 && sx < W && sy >= 0 && sy < H) {
+                                size_t c_idx = (static_cast<size_t>(y) * W + x) * S;
+                                size_t p_idx = (static_cast<size_t>(sy) * W + sx) * S;
+                                bool match = true;
+                                for (size_t s = 0; s < S; ++s) {
+                                    if (current_frame[c_idx + s] != previous_frame[p_idx + s]) {
+                                        match = false;
+                                        break;
+                                    }
+                                }
+                                if (match) matches++;
+                            }
+                        }
+                    }
+                    if (matches > max_matches) {
+                        max_matches = matches;
+                        best_dx = dx;
+                        best_dy = dy;
+                    }
+                }
+            }
+            
+            size_t non_zero_P = total_cells - m00_matches;
+            size_t non_zero_M = total_cells - max_matches;
+            
+            if (static_cast<double>(non_zero_M) < static_cast<double>(non_zero_P) * 0.9) {
+                f_type = ascv::FrameType::M_FRAME;
+                std::vector<char> predicted_frame = previous_frame;
+                for (int y = 0; y < H; ++y) {
+                    for (int x = 0; x < W; ++x) {
+                        int sx = x - best_dx;
+                        int sy = y - best_dy;
+                        if (sx >= 0 && sx < W && sy >= 0 && sy < H) {
+                            size_t c_idx = (static_cast<size_t>(y) * W + x) * S;
+                            size_t p_idx = (static_cast<size_t>(sy) * W + sx) * S;
+                            for (size_t s = 0; s < S; ++s) {
+                                predicted_frame[c_idx + s] = previous_frame[p_idx + s];
+                            }
+                        }
+                    }
+                }
+                
+                std::vector<char> delta_frame(total_cells * S);
+                for (size_t i = 0; i < total_cells * S; ++i) {
+                    delta_frame[i] = current_frame[i] - predicted_frame[i];
+                }
+                
+                ascv::MoveBlock mb{};
+                if (best_dx > 0) { mb.dest_x = best_dx; mb.src_x = 0; mb.width = W - best_dx; }
+                else { mb.dest_x = 0; mb.src_x = -best_dx; mb.width = W + best_dx; }
+                
+                if (best_dy > 0) { mb.dest_y = best_dy; mb.src_y = 0; mb.height = H - best_dy; }
+                else { mb.dest_y = 0; mb.src_y = -best_dy; mb.height = H + best_dy; }
+                
+                std::vector<uint8_t> compressed = compress_rle(delta_frame);
+                
+                std::vector<uint8_t> payload;
+                payload.push_back(1);
+                const uint8_t* mb_ptr = reinterpret_cast<const uint8_t*>(&mb);
+                payload.insert(payload.end(), mb_ptr, mb_ptr + sizeof(ascv::MoveBlock));
+                payload.insert(payload.end(), compressed.begin(), compressed.end());
+                
+                buffered_frames.push_back({ascv::FrameType::M_FRAME, std::move(payload)});
+                previous_frame = current_frame;
+                return;
+            }
+
             f_type = ascv::FrameType::P_FRAME;
             std::vector<char> delta_frame(total_cells * S);
             bool all_cells_match = true;
