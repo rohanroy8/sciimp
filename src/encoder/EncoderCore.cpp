@@ -371,11 +371,10 @@ void encode(const std::string& input_path, const std::string& output_path, int W
             std::vector<char> delta_frame(total_cells * S);
             bool all_cells_match = true;
             for (size_t i = 0; i < total_cells * S; ++i) {
-                if (current_frame[i] != previous_frame[i]) {
+                char delta = current_frame[i] - previous_frame[i];
+                delta_frame[i] = delta;
+                if (delta != 0) {
                     all_cells_match = false;
-                    delta_frame[i] = current_frame[i];
-                } else {
-                    delta_frame[i] = '\0';
                 }
             }
             if (all_cells_match) {

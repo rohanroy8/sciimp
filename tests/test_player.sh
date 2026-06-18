@@ -20,9 +20,9 @@ echo "Validating player output..."
 # Assert output starts with ESC[H (cursor home)
 # Read first 3 bytes as hex using od (universally available)
 FIRST_BYTES=$(od -An -N3 -tx1 "$PLAYER_OUT" | tr -d ' \n')
-EXPECTED="1b5b48"  # \x1b[H
+EXPECTED="1b5b3f"  # \x1b[? (for \x1b[?2026h)
 if [ "$FIRST_BYTES" != "$EXPECTED" ]; then
-    echo "ERROR: Output does not start with \\x1b[H (ESC[H)."
+    echo "ERROR: Output does not start with \\x1b[? (ESC[?)."
     echo "  Got (hex): $FIRST_BYTES"
     echo "  Expected:  $EXPECTED"
     exit 1

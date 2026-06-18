@@ -348,9 +348,7 @@ int main(int argc, char* argv[]) {
                                 std::copy(decompressed_data.begin(), decompressed_data.end(), current_frame.begin());
                             } else {
                                 for (size_t i = 0; i < total_cell_bytes; ++i) {
-                                    if (decompressed_data[i] != '\0') {
-                                        current_frame[i] = decompressed_data[i];
-                                    }
+                                    current_frame[i] += decompressed_data[i];
                                 }
                             }
                             idx++;
@@ -487,9 +485,7 @@ int main(int argc, char* argv[]) {
                     std::copy(decompressed_data.begin(), decompressed_data.end(), current_frame.begin());
                 } else {
                     for (size_t i = 0; i < total_cell_bytes; ++i) {
-                        if (decompressed_data[i] != '\0') {
-                            current_frame[i] = decompressed_data[i];
-                        }
+                        current_frame[i] += decompressed_data[i];
                     }
                 }
                 current_decoded_frame_idx++;
@@ -498,7 +494,7 @@ int main(int argc, char* argv[]) {
 
             if (frame_updated && !ascv::g_shutdown_requested) {
                 out_buf.clear();
-                out_buf.append("\x1b[H");
+                out_buf.append("\x1b[?2026h\x1b[H");
 
                 if (color_mode == ascv::ColorMode::MONOCHROME) {
                     for (uint16_t row = 0; row < header.height; ++row) {
@@ -547,7 +543,7 @@ int main(int argc, char* argv[]) {
                     }
                     out_buf.append("\x1b[0m");
                 }
-
+                out_buf.append("\x1b[?2026l");
                 WRITE_RESULT_T written = WRITE_FD(out_buf.data(), out_buf.size());
                 (void)written;
             }

@@ -38,6 +38,7 @@ Makefile
 Thumbs.db
 
 # Media / binary video files
+media/
 *.ascv
 *.mp4
 
