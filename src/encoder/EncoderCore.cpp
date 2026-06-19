@@ -622,17 +622,17 @@ void encode(const std::string& input_path, const std::string& output_path, int W
                 uint8_t r = rf.rgb[i * 3 + 0];
                 uint8_t g = rf.rgb[i * 3 + 1];
                 uint8_t b = rf.rgb[i * 3 + 2];
-                if (color_mode == ascv::ColorMode::ANSI_16) {
-                    frame_buffer[total_cells + i] = rgb_to_ansi16(r, g, b);
-                } else if (color_mode == ascv::ColorMode::ANSI_256) {
-                    frame_buffer[total_cells + i] = rgb_to_ansi256(r, g, b);
-                } else if (color_mode == ascv::ColorMode::RGB_24) {
-                    uint32_t c = (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | b;
-                    auto it = color_cache.find(c);
-                    if (it != color_cache.end()) {
-                        frame_buffer[total_cells + i] = it->second;
-                    } else {
-                        uint8_t best_idx = 0;
+                uint32_t c = (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | b;
+                auto it = color_cache.find(c);
+                if (it != color_cache.end()) {
+                    frame_buffer[total_cells + i] = it->second;
+                } else {
+                    uint8_t best_idx = 0;
+                    if (color_mode == ascv::ColorMode::ANSI_16) {
+                        best_idx = rgb_to_ansi16(r, g, b);
+                    } else if (color_mode == ascv::ColorMode::ANSI_256) {
+                        best_idx = rgb_to_ansi256(r, g, b);
+                    } else if (color_mode == ascv::ColorMode::RGB_24) {
                         int min_dist = 10000000;
                         for (size_t p = 0; p < palette_data.size(); p += 3) {
                             int dr = static_cast<int>(r) - palette_data[p];
@@ -644,9 +644,9 @@ void encode(const std::string& input_path, const std::string& output_path, int W
                                 best_idx = static_cast<uint8_t>(p / 3);
                             }
                         }
-                        color_cache[c] = best_idx;
-                        frame_buffer[total_cells + i] = best_idx;
                     }
+                    color_cache[c] = best_idx;
+                    frame_buffer[total_cells + i] = best_idx;
                 }
             }
         }
