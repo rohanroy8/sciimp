@@ -500,7 +500,7 @@ void encode(const std::string& input_path, const std::string& output_path, int W
             for (size_t i = 0; i < total_cells; ++i) {
                 bool match = true;
                 for (size_t s = 0; s < S; ++s) {
-                    if (current_frame[i * S + s] != previous_frame[i * S + s]) {
+                    if (current_frame[s * total_cells + i] != previous_frame[s * total_cells + i]) {
                         match = false;
                         break;
                     }
@@ -522,11 +522,11 @@ void encode(const std::string& input_path, const std::string& output_path, int W
                             int sx = x - dx;
                             int sy = y - dy;
                             if (sx >= 0 && sx < W && sy >= 0 && sy < H) {
-                                size_t c_idx = (static_cast<size_t>(y) * W + x) * S;
-                                size_t p_idx = (static_cast<size_t>(sy) * W + sx) * S;
+                                size_t c_idx = static_cast<size_t>(y) * W + x;
+                                size_t p_idx = static_cast<size_t>(sy) * W + sx;
                                 bool match = true;
                                 for (size_t s = 0; s < S; ++s) {
-                                    if (current_frame[c_idx + s] != previous_frame[p_idx + s]) {
+                                    if (current_frame[s * total_cells + c_idx] != previous_frame[s * total_cells + p_idx]) {
                                         match = false;
                                         break;
                                     }
@@ -554,10 +554,10 @@ void encode(const std::string& input_path, const std::string& output_path, int W
                         int sx = x - best_dx;
                         int sy = y - best_dy;
                         if (sx >= 0 && sx < W && sy >= 0 && sy < H) {
-                            size_t c_idx = (static_cast<size_t>(y) * W + x) * S;
-                            size_t p_idx = (static_cast<size_t>(sy) * W + sx) * S;
+                            size_t c_idx = static_cast<size_t>(y) * W + x;
+                            size_t p_idx = static_cast<size_t>(sy) * W + sx;
                             for (size_t s = 0; s < S; ++s) {
-                                predicted_frame[c_idx + s] = previous_frame[p_idx + s];
+                                predicted_frame[s * total_cells + c_idx] = previous_frame[s * total_cells + p_idx];
                             }
                         }
                     }

@@ -361,8 +361,8 @@ int main(int argc, char* argv[]) {
                                             for(uint16_t y = 0; y < mb.height; ++y) {
                                                 for(uint16_t x = 0; x < mb.width; ++x) {
                                                     for(size_t s = 0; s < S; ++s) {
-                                                        size_t dest_idx = ((mb.dest_y + y) * static_cast<size_t>(header.width) + (mb.dest_x + x)) * S + s;
-                                                        size_t src_idx = ((mb.src_y + y) * static_cast<size_t>(header.width) + (mb.src_x + x)) * S + s;
+                                                        size_t dest_idx = s * frame_cells + ((mb.dest_y + y) * static_cast<size_t>(header.width) + (mb.dest_x + x));
+                                                        size_t src_idx = s * frame_cells + ((mb.src_y + y) * static_cast<size_t>(header.width) + (mb.src_x + x));
                                                         if (dest_idx < total_cell_bytes && src_idx < total_cell_bytes) {
                                                             predicted_frame[dest_idx] = current_frame[src_idx];
                                                         }
@@ -535,8 +535,8 @@ int main(int argc, char* argv[]) {
                                 for(uint16_t y = 0; y < mb.height; ++y) {
                                     for(uint16_t x = 0; x < mb.width; ++x) {
                                         for(size_t s = 0; s < S; ++s) {
-                                            size_t dest_idx = ((mb.dest_y + y) * static_cast<size_t>(header.width) + (mb.dest_x + x)) * S + s;
-                                            size_t src_idx = ((mb.src_y + y) * static_cast<size_t>(header.width) + (mb.src_x + x)) * S + s;
+                                            size_t dest_idx = s * frame_cells + ((mb.dest_y + y) * static_cast<size_t>(header.width) + (mb.dest_x + x));
+                                            size_t src_idx = s * frame_cells + ((mb.src_y + y) * static_cast<size_t>(header.width) + (mb.src_x + x));
                                             if (dest_idx < total_cell_bytes && src_idx < total_cell_bytes) {
                                                 predicted_frame[dest_idx] = current_frame[src_idx];
                                             }
